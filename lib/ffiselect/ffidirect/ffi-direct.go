@@ -1,3 +1,6 @@
+//go:build cgo
+// +build cgo
+
 // This is a wrapper around the FFI functions that allows them to be called by reflection.
 // For the Curio GPU selector, see lib/ffiselect/ffiselect.go.
 package ffidirect
