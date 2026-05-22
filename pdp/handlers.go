@@ -1334,11 +1334,45 @@ func (p *PDPService) cleanup(ctx context.Context) {
 			}
 		}
 
-		// Clean up old piece pull records (older than 5 days).
-		// CASCADE deletes pdp_piece_pull_items automatically on Postgres; SQLite's
-		// schema definition mirrors that with ON DELETE CASCADE where applicable.
-		cutoff5d := time.Now().UTC().AddDate(0, 0, -5)
-		if _, err := db.ExecI(ctx, `DELETE FROM pdp_piece_pulls WHERE created_at < $1`, cutoff5d); err != nil {
+		// Clean up old piece pull records (older than 5 days). Pull items only
+		// store refs created by PullPiece, so delete unused refs first;
+		// otherwise the CASCADE from pdp_piece_pulls removes the pointer to
+		// those refs.
+		_, err = db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
+			_, err = tx.ExecI(`
+				WITH old_pull_refs AS (
+					SELECT DISTINCT fi.parked_piece_ref AS ref_id
+					FROM pdp_piece_pull_items fi
+					JOIN pdp_piece_pulls pp ON pp.id = fi.fetch_id
+					WHERE pp.created_at < NOW() - INTERVAL '5 days'
+						AND fi.parked_piece_ref IS NOT NULL
+				)
+				DELETE FROM parked_piece_refs pr
+				USING old_pull_refs old
+				WHERE pr.ref_id = old.ref_id
+					AND NOT EXISTS (
+						SELECT 1 FROM pdp_piecerefs ppr WHERE ppr.piece_ref = pr.ref_id
+					)
+					AND NOT EXISTS (
+						SELECT 1
+						FROM pdp_piece_pull_items live_fi
+						JOIN pdp_piece_pulls live_pp ON live_pp.id = live_fi.fetch_id
+						WHERE live_fi.parked_piece_ref = pr.ref_id
+							AND live_pp.created_at >= NOW() - INTERVAL '5 days'
+					)
+				`)
+			if err != nil {
+				return false, fmt.Errorf("delete old pull refs: %w", err)
+			}
+
+			_, err = tx.ExecI(`DELETE FROM pdp_piece_pulls WHERE created_at < NOW() - INTERVAL '5 days'`)
+			if err != nil {
+				return false, fmt.Errorf("delete old pull records: %w", err)
+			}
+
+			return true, nil
+		}, harmonyquery.OptionRetry())
+		if err != nil {
 			log.Errorw("failed to delete old piece pull records", "error", err)
 		}
 	}
