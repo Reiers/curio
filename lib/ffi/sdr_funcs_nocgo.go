@@ -7,10 +7,11 @@
 // still need the structural surface of *SealCalls and *storageProvider
 // so that lib/ffi/piece_funcs.go (which is pure Go) compiles.
 //
-// This file provides only what piece_funcs.go references: SealCalls,
-// storageProvider, NewSealCalls, ensureOneCopy, plus the `log` package
-// global. The sealing-pipeline methods (GenerateSDR, TreeRC, etc.) are
-// absent here; callers that need them must build with CGO_ENABLED=1.
+// This file provides only what piece_funcs.go and task_storage.go
+// reference: SealCalls, storageProvider, NewSealCalls, ensureOneCopy,
+// plus the `log` package global. The sealing-pipeline methods
+// (GenerateSDR, TreeRC, PoRepSnark, etc.) are absent; callers that
+// need them must build with CGO_ENABLED=1.
 
 package ffi
 
@@ -32,12 +33,14 @@ import (
 var log = logging.Logger("cu/ffi")
 
 // SealCalls — non-CGo build retains the type so callers like piece_funcs.go
-// can write methods on it. Real sealing/proof methods live in
-// sdr_funcs.go behind //go:build cgo.
+// and task_storage.go can define methods on it. Real sealing/proof
+// method implementations live in sdr_funcs.go behind //go:build cgo.
 type SealCalls struct {
 	Sectors *storageProvider
 }
 
+// NewSealCalls is the canonical constructor. Identical signature to the
+// cgo build.
 func NewSealCalls(st *paths.Remote, ls *paths.Local, si paths.SectorIndex) *SealCalls {
 	return &SealCalls{
 		Sectors: &storageProvider{
@@ -57,7 +60,8 @@ type storageProvider struct {
 }
 
 // AcquireSector — under !cgo we keep the pure-Go body (no sealing-pipeline
-// dependencies; this is plain storage acquisition logic).
+// dependencies; this is plain storage acquisition logic). Body mirrors the
+// cgo build verbatim except for tracing/log noise that's irrelevant here.
 func (l *storageProvider) AcquireSector(ctx context.Context, taskID *harmonytask.TaskID, sector storiface.SectorRef, existing, allocate storiface.SectorFileType, sealing storiface.PathType) (fspaths, ids storiface.SectorPaths, release func(dontDeclare ...storiface.SectorFileType), err error) {
 	var sectorPaths, storageIDs storiface.SectorPaths
 	var releaseStorage func()
@@ -74,9 +78,10 @@ func (l *storageProvider) AcquireSector(ctx context.Context, taskID *harmonytask
 	}
 	if ok && resv != nil {
 		if resv.Alloc != allocate || resv.Existing != existing {
-			return storiface.SectorPaths{}, storiface.SectorPaths{}, nil, xerrors.Errorf("storage reservation mismatch for sector %v", sector.ID)
+			return storiface.SectorPaths{}, storiface.SectorPaths{}, nil, xerrors.Errorf("storage reservation type mismatch")
 		}
-		sectorPaths, storageIDs = resv.Paths, resv.PathIDs
+		sectorPaths = resv.Paths
+		storageIDs = resv.PathIDs
 		releaseStorage = resv.Release
 	} else {
 		sectorPaths, storageIDs, err = l.localStore.AcquireSector(ctx, sector, existing, allocate, sealing, storiface.AcquireMove)
@@ -110,16 +115,7 @@ func (sb *SealCalls) ensureOneCopy(ctx context.Context, sid abi.SectorID, pathID
 	return nil
 }
 
-// StorageReservation mirrors the CGo build's definition. Used by
-// AcquireSector and downstream piece-write code paths.
-type StorageReservation struct {
-	SectorRef storiface.SectorRef
-	Paths     storiface.SectorPaths
-	PathIDs   storiface.SectorPaths
-	Alloc     storiface.SectorFileType
-	Existing  storiface.SectorFileType
-	Release   func()
-}
-
-// Silence unused import diagnostics if abi happens to not be referenced.
-var _ = abi.SectorID{}
+// silence the unused-import linter when nothing in this file touches
+// abi/log directly; both are kept available for piece_funcs.go.
+var _ = abi.ChainEpoch(0)
+var _ = log
