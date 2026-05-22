@@ -1,19 +1,6 @@
 //go:build cgo
 // +build cgo
 
-// Curio Core / Reiers fork patch: the four methods on Local that
-// require filecoin-ffi's CGo functions (GenerateSingleVanillaProof,
-// GeneratePoRepVanillaProof, ReadSnapVanillaProof, supraPoRepVanillaProof)
-// live here behind a `cgo` build tag so the package compiles cleanly
-// under CGO_ENABLED=0 for PDP-only consumers (Curio Core).
-//
-// Upstream Curio always builds with CGo; this split is a no-op for them.
-// Curio Core's pure-Go bundle never calls these methods (PDP only needs
-// paths.StashStore, defined elsewhere in this package).
-//
-// When this fork merges back to upstream as a PR, the only diff vs
-// `integ/task` is this file + the matching deletion from local.go.
-
 package paths
 
 import (
@@ -23,15 +10,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 	"golang.org/x/xerrors"
 
 	ffi "github.com/filecoin-project/filecoin-ffi"
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
+	"github.com/filecoin-project/go-state-types/proof"
 
 	cuproof "github.com/filecoin-project/curio/lib/proof"
 	"github.com/filecoin-project/curio/lib/storiface"

@@ -1,7 +1,6 @@
 package paths
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"expvar"
@@ -18,24 +17,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ipfs/go-cid"
 	"github.com/samber/lo"
 	"github.com/snadrus/must"
-	"go.opencensus.io/stats"
-	"go.opencensus.io/tag"
 	"golang.org/x/xerrors"
 
-	ffi "github.com/filecoin-project/filecoin-ffi"
-	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
-	"github.com/filecoin-project/go-state-types/proof"
 
 	"github.com/filecoin-project/curio/lib/contextlock"
-	cuproof "github.com/filecoin-project/curio/lib/proof"
 	"github.com/filecoin-project/curio/lib/storiface"
-	"github.com/filecoin-project/curio/lib/supraffi"
 
-	"github.com/filecoin-project/lotus/lib/result"
 	"github.com/filecoin-project/lotus/storage/sealer/fsutil"
 )
 
@@ -1144,7 +1134,6 @@ func (st *Local) FsStat(ctx context.Context, id storiface.ID) (fsutil.FsStat, er
 	stat, _, err := p.stat(st.localStorage)
 	return stat, err
 }
-
 
 var _ Store = &Local{}
 
