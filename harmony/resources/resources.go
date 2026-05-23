@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.org/x/xerrors"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 )
 
 var LOOKS_DEAD_TIMEOUT = 10 * time.Minute // Time w/o minute heartbeats
@@ -44,7 +44,7 @@ var logger = logging.Logger("harmonytask")
 var lotusRE = regexp.MustCompile("lotus-worker|lotus-harmony|yugabyted|yb-master|yb-tserver")
 
 // Register probes this host and records capacity in harmony_machines.
-func Register(db *harmonydb.DB, hostnameAndPort string) (*Reg, error) {
+func Register(db harmonyquery.DBInterface, hostnameAndPort string) (*Reg, error) {
 	res, err := getResources()
 	if err != nil {
 		return nil, err
@@ -53,7 +53,7 @@ func Register(db *harmonydb.DB, hostnameAndPort string) (*Reg, error) {
 }
 
 // RegisterWithResources records the given capacity for hostnameAndPort (for tests or static sizing).
-func RegisterWithResources(db *harmonydb.DB, hostnameAndPort string, res Resources) (*Reg, error) {
+func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, res Resources) (*Reg, error) {
 	var reg Reg
 	reg.Resources = res
 	ctx := context.Background()
@@ -109,7 +109,7 @@ func RegisterWithResources(db *harmonydb.DB, hostnameAndPort string, res Resourc
 	return &reg, nil
 }
 
-func CleanupMachines(ctx context.Context, db *harmonydb.DB) int {
+func CleanupMachines(ctx context.Context, db harmonyquery.DBInterface) int {
 	ct, err := db.Exec(ctx,
 		`DELETE FROM harmony_machines WHERE last_contact < CURRENT_TIMESTAMP - INTERVAL '1 MILLISECOND' * $1 `,
 		LOOKS_DEAD_TIMEOUT.Milliseconds()) // ms enables unit testing to change timeout.

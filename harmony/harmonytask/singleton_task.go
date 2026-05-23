@@ -8,7 +8,7 @@ import (
 
 	"github.com/yugabyte/pgx/v5"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask/internal/runnowflags"
 )
 
@@ -51,7 +51,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 		}
 		lastCall = time.Now()
 
-		add(func(taskID TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+		add(func(taskID TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 			var existingTaskID *int64
 			var lastRunTime time.Time
 			var runNowRequest bool

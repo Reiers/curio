@@ -16,6 +16,7 @@ import (
 	"go.opencensus.io/stats"
 	"go.opencensus.io/tag"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask/internal/acceptcache"
 	"github.com/filecoin-project/curio/harmony/harmonytask/internal/preemptbids"
@@ -145,7 +146,7 @@ type TaskInterface interface {
 // would cause the insert to fail.
 // The error indicates that instead of a conflict (which we should ignore) that we
 // actually have a serious problem that needs to be logged with context.
-type AddTaskFunc func(extraInfo func(TaskID, *harmonydb.Tx) (shouldCommit bool, seriousError error))
+type AddTaskFunc func(extraInfo func(TaskID, harmonyquery.TxInterface) (shouldCommit bool, seriousError error))
 
 // TaskEngine is the central coordinator for distributed task scheduling. It
 // owns the handler registry, the event-driven scheduler, and the peering
@@ -190,7 +191,7 @@ type TaskEngine struct {
 type taskEngineConfig struct {
 	ctx                   context.Context
 	grace                 context.CancelFunc
-	db                    *harmonydb.DB
+	db                    harmonyquery.DBInterface
 	reg                   *resources.Reg
 	ownerID               int
 	hostAndPort           string
@@ -241,7 +242,7 @@ type TaskID int
 //  5. Launch Adder goroutines for each task type (external event listeners).
 //  6. Start the scheduler event loop and background poller.
 func New(
-	db *harmonydb.DB,
+	db harmonyquery.DBInterface,
 	impls []TaskInterface,
 	hostnameAndPort string,
 	peerConnector PeerConnectorInterface) (*TaskEngine, error) {
@@ -255,7 +256,7 @@ func New(
 
 // NewWithReg is like New but uses an existing *resources.Reg (from resources.Register or RegisterWithResources).
 func NewWithReg(
-	db *harmonydb.DB,
+	db harmonyquery.DBInterface,
 	impls []TaskInterface,
 	hostnameAndPort string,
 	peerConnector PeerConnectorInterface,
@@ -361,7 +362,7 @@ func NewWithReg(
 	// require new work to be scheduled.
 	for _, h := range e.handlers {
 		go func(name string) {
-			h.Adder(func(extraInfo func(TaskID, *harmonydb.Tx) (bool, error)) {
+			h.Adder(func(extraInfo func(TaskID, harmonyquery.TxInterface) (bool, error)) {
 				e.AddTaskByName(name, extraInfo)
 			})
 		}(h.Name)
@@ -488,7 +489,7 @@ func (e *TaskEngine) pollerTryAllWork(taskSource taskSource, eventEmitter eventE
 		}
 		if v.IAmBored != nil {
 			go func() {
-				err := v.IAmBored(func(extraInfo func(TaskID, *harmonydb.Tx) (shouldCommit bool, seriousError error)) {
+				err := v.IAmBored(func(extraInfo func(TaskID, harmonyquery.TxInterface) (shouldCommit bool, seriousError error)) {
 					e.AddTaskByName(v.Name, extraInfo)
 				})
 				if err != nil {
@@ -687,7 +688,7 @@ func (e *TaskEngine) singletonRunNowPoller() {
 // immediately without waiting for a DB poll cycle. If the task is already
 // pending or running (unique-constraint violation), it is silently skipped.
 func (e *TaskEngine) RestartTaskByID(id TaskID, name string, postedTime time.Time) error {
-	_, err := e.cfg.db.BeginTransaction(e.cfg.ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err := e.cfg.db.BeginTransactionI(e.cfg.ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		c, err := tx.Exec(`
 			INSERT INTO harmony_task (id, initiated_by, update_time, posted_time, owner_id, added_by, previous_task, name)
 			VALUES ($1, NULL, NOW(), $2, NULL, $3, NULL, $4)
@@ -729,12 +730,12 @@ func (e *TaskEngine) RestartTaskByID(id TaskID, name string, postedTime time.Tim
 // Duplicate detection relies on the caller's extra func: if the transaction
 // violates a unique constraint, the task already exists and is silently skipped.
 // Serialization errors are retried with exponential backoff.
-func (e *TaskEngine) AddTaskByName(name string, extra func(TaskID, *harmonydb.Tx) (bool, error)) {
+func (e *TaskEngine) AddTaskByName(name string, extra func(TaskID, harmonyquery.TxInterface) (bool, error)) {
 	var tID TaskID
 	retryWait := time.Millisecond * 100
 	var postedAt time.Time
 retryAddTask:
-	committed, err := e.cfg.db.BeginTransaction(e.cfg.ctx, func(tx *harmonydb.Tx) (bool, error) {
+	committed, err := e.cfg.db.BeginTransactionI(e.cfg.ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		err := tx.QueryRow(`INSERT INTO harmony_task (name, added_by, posted_time) 
           VALUES ($1, $2, CURRENT_TIMESTAMP) RETURNING id, posted_time`, name, e.cfg.ownerID).Scan(&tID, &postedAt)
 		if err != nil {

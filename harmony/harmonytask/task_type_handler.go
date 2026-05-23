@@ -17,7 +17,7 @@ import (
 
 	"github.com/filecoin-project/go-state-types/abi"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask/internal/acceptcache"
 	"github.com/filecoin-project/curio/harmony/harmonytask/internal/runregistry"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -31,7 +31,7 @@ var log = logging.Logger("harmonytask")
 // having a matching GetSectorID method, without needing to reference this
 // type by name.
 type pipelineTask interface {
-	GetSectorID(db *harmonydb.DB, taskID int64) (*abi.SectorID, error)
+	GetSectorID(db harmonyquery.DBInterface, taskID int64) (*abi.SectorID, error)
 }
 
 // taskTypeHandler wraps a TaskInterface with scheduling metadata and runtime
@@ -372,7 +372,7 @@ func (h *taskTypeHandler) recordCompletion(tID TaskID, sectorID *abi.SectorID, w
 
 	var waitStartTime time.Time
 retryRecordCompletion:
-	cm, err := h.TaskEngine.cfg.db.BeginTransaction(context.Background(), func(tx *harmonydb.Tx) (bool, error) {
+	cm, err := h.TaskEngine.cfg.db.BeginTransactionI(context.Background(), func(tx harmonyquery.TxInterface) (bool, error) {
 		var postedTime time.Time
 		var retries uint
 		var updateTime time.Time
