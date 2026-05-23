@@ -12,6 +12,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
@@ -26,7 +27,7 @@ type DataSetCreate struct {
 	Client            string `db:"client"`
 }
 
-func NewWatcherDataSetCreate(db *harmonydb.DB, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched) {
+func NewWatcherDataSetCreate(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched) {
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		err := processPendingDataSetCreates(ctx, db, ethClient)
 		if err != nil {
@@ -38,7 +39,7 @@ func NewWatcherDataSetCreate(db *harmonydb.DB, ethClient ethchain.EthClient, pcs
 	}
 }
 
-func processPendingDataSetCreates(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) error {
+func processPendingDataSetCreates(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	// Query for pdp_data_set_create entries tx_hash is NOT NULL
 	var dataSetCreates []DataSetCreate
 
@@ -67,7 +68,7 @@ func processPendingDataSetCreates(ctx context.Context, db *harmonydb.DB, ethClie
 	return nil
 }
 
-func processDataSetCreate(ctx context.Context, db *harmonydb.DB, dsc DataSetCreate, ethClient ethchain.EthClient) error {
+func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, dsc DataSetCreate, ethClient ethchain.EthClient) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	var txSuccess bool
@@ -94,7 +95,7 @@ func processDataSetCreate(ctx context.Context, db *harmonydb.DB, dsc DataSetCrea
 	if !txSuccess {
 		// This means msg failed, we should let the user know
 		// TODO: Review if error would be in receipt
-		comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			n, err := tx.Exec(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
@@ -146,7 +147,7 @@ func processDataSetCreate(ctx context.Context, db *harmonydb.DB, dsc DataSetCrea
 		return xerrors.Errorf("failed to get max proving period: %w", err)
 	}
 
-	comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		n, err := tx.Exec(`INSERT INTO pdp_data_set (id, client, proving_period, challenge_window, create_deal_id, create_message_hash) 
 								VALUES ($1, $2, $3, $4, $5, $6)`, dataSetId, dsc.Client, provingPeriod, challengeWindow, dsc.ID, dsc.CreateMessageHash)
 		if err != nil {

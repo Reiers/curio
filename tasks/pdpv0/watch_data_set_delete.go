@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
@@ -16,7 +17,7 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-func NewDataSetDeleteWatcher(db *harmonydb.DB, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched) {
+func NewDataSetDeleteWatcher(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched) {
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		err := processPendingDeletes(ctx, db, ethClient)
 		if err != nil {
@@ -28,7 +29,7 @@ func NewDataSetDeleteWatcher(db *harmonydb.DB, ethClient ethchain.EthClient, pcs
 	}
 }
 
-func processPendingDeletes(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) error {
+func processPendingDeletes(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	var deletes []struct {
 		ID      int64        `db:"id"`
 		TxHash  string       `db:"delete_tx_hash"`
@@ -79,7 +80,7 @@ func processPendingDeletes(ctx context.Context, db *harmonydb.DB, ethClient ethc
 			return errors.New("data set is still live")
 		}
 
-		comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			// Using a transaction as there are foreign key constraints and triggers.
 
 			// Delete all piece refs for this data set

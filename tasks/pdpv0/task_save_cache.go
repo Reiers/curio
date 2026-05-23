@@ -12,6 +12,7 @@ import (
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
 	"github.com/filecoin-project/go-padreader"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -34,12 +35,12 @@ const PaddedReadSize = 4 << 20
 const MaxRawSizeForSkip = MinSizeForCache * 127 / 128
 
 type TaskPDPSaveCache struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	cpr *cachedreader.CachedPieceReader
 	idx *indexstore.IndexStore
 }
 
-func NewTaskPDPSaveCache(db *harmonydb.DB, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *TaskPDPSaveCache {
+func NewTaskPDPSaveCache(db harmonyquery.DBInterface, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *TaskPDPSaveCache {
 	return &TaskPDPSaveCache{
 		db:  db,
 		cpr: cpr,
@@ -207,7 +208,7 @@ func (t *TaskPDPSaveCache) Adder(taskFunc harmonytask.AddTaskFunc) {
 func (t *TaskPDPSaveCache) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var pendings []struct {

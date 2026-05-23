@@ -16,6 +16,7 @@ import (
 	"github.com/filecoin-project/go-data-segment/datasegment"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -29,11 +30,11 @@ import (
 )
 
 type AggregatePDPDealTask struct {
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 	sc *ffi.SealCalls
 }
 
-func NewAggregatePDPDealTask(db *harmonydb.DB, sc *ffi.SealCalls) *AggregatePDPDealTask {
+func NewAggregatePDPDealTask(db harmonyquery.DBInterface, sc *ffi.SealCalls) *AggregatePDPDealTask {
 	return &AggregatePDPDealTask{
 		db: db,
 		sc: sc,
@@ -186,7 +187,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 	var parkedPieceID, pieceRefID int64
 	var pieceParked bool
 
-	comm, err := a.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := a.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// TODO: Review this logic for incomplete pieces
 		// Check if we already have the piece, if found then verify access and skip rest of the processing
 		var pid int64
@@ -266,7 +267,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 		}
 	}
 
-	comm, err = a.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err = a.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Replace the pipeline piece with a new aggregated piece
 		_, err = tx.Exec(`DELETE FROM pdp_pipeline WHERE id = $1`, id)
 		if err != nil {
@@ -337,7 +338,7 @@ func (a *AggregatePDPDealTask) TypeDetails() harmonytask.TaskTypeDetails {
 func (a *AggregatePDPDealTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var deals []struct {

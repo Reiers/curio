@@ -27,6 +27,7 @@ import (
 	"github.com/filecoin-project/go-padreader"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -47,7 +48,7 @@ import (
 const LeafSize = proof.NODE_SIZE
 
 type ProveTask struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
 	cpr       *cachedreader.CachedPieceReader
@@ -64,7 +65,7 @@ type ProveTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)                                                                              //perm:read
 }
 
-func NewProveTask(chainSched *chainsched.CurioChainSched, db *harmonydb.DB, ethClient ethchain.EthClient, fil ProveTaskChainApi, sender *message.SenderETH, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *ProveTask {
+func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil ProveTaskChainApi, sender *message.SenderETH, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *ProveTask {
 	pt := &ProveTask{
 		db:        db,
 		ethClient: ethClient,
@@ -87,7 +88,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db *harmonydb.DB, ethC
 		for {
 			more := false
 
-			pt.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			pt.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Select data sets ready for proving
 				var dataSets []struct {
 					ID int64 `db:"id"`
@@ -440,7 +441,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 		}
 		currentHeight := int64(ts.Height())
 
-		comm, err := p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			handleErr := HandleProvingSendError(tx, dataSetId, currentHeight, sendErr)
 			if handleErr != nil {
 				return false, xerrors.Errorf("failed to handle proving send error: %w", handleErr)

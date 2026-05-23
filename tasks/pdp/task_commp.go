@@ -16,6 +16,7 @@ import (
 	"github.com/filecoin-project/go-padreader"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -28,12 +29,12 @@ import (
 )
 
 type PDPCommpTask struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	sc  *ffi.SealCalls
 	max int
 }
 
-func NewPDPCommpTask(db *harmonydb.DB, sc *ffi.SealCalls, max int) *PDPCommpTask {
+func NewPDPCommpTask(db harmonyquery.DBInterface, sc *ffi.SealCalls, max int) *PDPCommpTask {
 	return &PDPCommpTask{
 		db:  db,
 		sc:  sc,
@@ -207,7 +208,7 @@ func (c *PDPCommpTask) TypeDetails() harmonytask.TaskTypeDetails {
 func (c *PDPCommpTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string

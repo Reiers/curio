@@ -11,6 +11,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -25,7 +26,7 @@ import (
 )
 
 type InitProvingPeriodTask struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
 
@@ -38,7 +39,7 @@ type InitProvingPeriodTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)
 }
 
-func NewInitProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH) *InitProvingPeriodTask {
+func NewInitProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH) *InitProvingPeriodTask {
 	ipp := &InitProvingPeriodTask{
 		db:        db,
 		ethClient: ethClient,
@@ -76,7 +77,7 @@ func NewInitProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fi
 		}
 
 		for _, ps := range toCallInit {
-			ipp.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			ipp.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Update pdp_data_set to set challenge_request_task_id = id
 				affected, err := tx.Exec(`
                         UPDATE pdp_data_set
@@ -219,7 +220,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 	txHashLower := strings.ToLower(txHash.Hex())
 
 	// Update the database in a transaction
-	_, err = ipp.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = ipp.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update pdp_data_set
 		affected, err := tx.Exec(`
             UPDATE pdp_data_set

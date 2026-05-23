@@ -11,6 +11,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -23,12 +24,12 @@ import (
 )
 
 type TerminateFWSSTask struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
 }
 
-func NewTerminateServiceTask(db *harmonydb.DB, ethClient ethchain.EthClient, sender *message.SenderETH) *TerminateFWSSTask {
+func NewTerminateServiceTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH) *TerminateFWSSTask {
 	return &TerminateFWSSTask{
 		db:        db,
 		ethClient: ethClient,
@@ -147,7 +148,7 @@ func (t *TerminateFWSSTask) schedule(ctx context.Context, addTaskFunc harmonytas
 	var stop bool
 
 	for !stop {
-		addTaskFunc(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		addTaskFunc(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true
 
 			var pendings []int64
@@ -189,7 +190,7 @@ func (t *TerminateFWSSTask) Adder(taskFunc harmonytask.AddTaskFunc) {}
 var _ harmonytask.TaskInterface = &TerminateFWSSTask{}
 var _ = harmonytask.Reg(&TerminateFWSSTask{})
 
-func getPDPOwner(ctx context.Context, db *harmonydb.DB) (common.Address, error) {
+func getPDPOwner(ctx context.Context, db harmonyquery.DBInterface) (common.Address, error) {
 	var owner string
 	err := db.QueryRow(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&owner)
 	if err != nil {

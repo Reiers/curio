@@ -11,6 +11,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
@@ -31,7 +32,7 @@ type DataSetPieceAdd struct {
 }
 
 // NewWatcherPieceAdd sets up the watcher for data set piece additions
-func NewWatcherPieceAdd(db *harmonydb.DB, pcs *chainsched.CurioChainSched, ethClient ethchain.EthClient) {
+func NewWatcherPieceAdd(db harmonyquery.DBInterface, pcs *chainsched.CurioChainSched, ethClient ethchain.EthClient) {
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		err := processPendingDataSetPieceAdds(ctx, db, ethClient)
 		if err != nil {
@@ -45,7 +46,7 @@ func NewWatcherPieceAdd(db *harmonydb.DB, pcs *chainsched.CurioChainSched, ethCl
 }
 
 // processPendingDataSetPieceAdds processes piece additions that have been confirmed on-chain
-func processPendingDataSetPieceAdds(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) error {
+func processPendingDataSetPieceAdds(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	// Query for pdp_dataset_piece_adds entries where add_message_ok = TRUE
 	var pieceAdds []DataSetPieceAdd
 
@@ -75,7 +76,7 @@ func processPendingDataSetPieceAdds(ctx context.Context, db *harmonydb.DB, ethCl
 	return nil
 }
 
-func processDataSetPieceAdd(ctx context.Context, db *harmonydb.DB, pieceAdd DataSetPieceAdd, ethClient ethchain.EthClient) error {
+func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pieceAdd DataSetPieceAdd, ethClient ethchain.EthClient) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	var txSuccess bool
@@ -100,7 +101,7 @@ func processDataSetPieceAdd(ctx context.Context, db *harmonydb.DB, pieceAdd Data
 	if !txSuccess {
 		// This means msg failed, we should let the user know
 		// TODO: Review if error would be in receipt
-		comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			n, err := tx.Exec(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
@@ -199,7 +200,7 @@ func processDataSetPieceAdd(ctx context.Context, db *harmonydb.DB, pieceAdd Data
 	}
 
 	// Insert into message_waits_eth and pdp_dataset_pieces
-	comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update data set for initialization upon first add
 		_, err = tx.Exec(`
 			UPDATE pdp_data_set SET init_ready = true

@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/pdp/contract"
@@ -21,7 +22,7 @@ type DataSetCreate struct {
 
 // processPendingDataSetCreates finalises data set creation best on transactions logs
 // it is called from proofset_watch.go
-func processPendingDataSetCreates(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) error {
+func processPendingDataSetCreates(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	// Query for pdp_data_set_creates entries where ok = TRUE and data_set_created = FALSE
 	var dataSetCreates []DataSetCreate
 
@@ -57,7 +58,7 @@ func processPendingDataSetCreates(ctx context.Context, db *harmonydb.DB, ethClie
 	return nil
 }
 
-func processDataSetCreate(ctx context.Context, db *harmonydb.DB, psc DataSetCreate, ethClient ethchain.EthClient) error {
+func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, psc DataSetCreate, ethClient ethchain.EthClient) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	log.Debugw("Fetching tx_receipt from message_waits_eth", "txHash", psc.CreateMessageHash)
@@ -103,7 +104,7 @@ func processDataSetCreate(ctx context.Context, db *harmonydb.DB, psc DataSetCrea
 	if err != nil {
 		return xerrors.Errorf("failed to get max proving period: %w", err)
 	}
-	_, err = db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Insert a new entry into pdp_data_sets
 		_, err = tx.Exec(`
         INSERT INTO pdp_data_sets (id, create_message_hash, service, proving_period, challenge_window)

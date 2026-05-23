@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -21,12 +22,12 @@ import (
 )
 
 type TaskChainSync struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
 }
 
-func NewTaskChainSync(db *harmonydb.DB, ethClient ethchain.EthClient, sender *message.SenderETH) *TaskChainSync {
+func NewTaskChainSync(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH) *TaskChainSync {
 	return &TaskChainSync{
 		db:        db,
 		ethClient: ethClient,
@@ -87,7 +88,7 @@ var _ harmonytask.TaskInterface = &TaskChainSync{}
 // It does not advance any deletion state; it only unpins rows whose terminate/delete task exhausted retries so the normal
 // schedulers can pick them up again.
 func (t *TaskChainSync) syncStaleDeletionTaskIDs(ctx context.Context) error {
-	comm, err := t.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		terminated, err := tx.Exec(`UPDATE pdp_delete_data_set pdds
 			SET terminate_service_task_id = NULL
 			WHERE pdds.terminate_service_task_id IS NOT NULL

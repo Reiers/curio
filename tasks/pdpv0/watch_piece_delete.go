@@ -17,6 +17,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
@@ -28,7 +29,7 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db *harmonydb.DB, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx *indexstore.IndexStore) {
+func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx *indexstore.IndexStore) {
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		// Zen: processPendingCleanup is currently disabled because we want to debug an observation
 		// that removed pieces cause unexpected proving failures. Rather than just comment out the
@@ -52,7 +53,7 @@ func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db *harmonydb.DB, ethClient e
 }
 
 //nolint:unused // TODO: reinstate after debugging
-func _processPendingCleanup(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) error {
+func _processPendingCleanup(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	var pieces []struct {
 		DataSetID int64 `db:"data_set"`
 		PieceID   int64 `db:"piece_id"`
@@ -92,7 +93,7 @@ func _processPendingCleanup(ctx context.Context, db *harmonydb.DB, ethClient eth
 	return nil
 }
 
-func processIndexingAndIPNICleanup(ctx context.Context, db *harmonydb.DB, cfg *config.HTTPConfig, idx *indexstore.IndexStore) error {
+func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterface, cfg *config.HTTPConfig, idx *indexstore.IndexStore) error {
 
 	var pieces []struct {
 		ID        int64  `db:"id"`
@@ -159,7 +160,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db *harmonydb.DB, cfg *c
 		var skipLoop bool
 		failed := true
 		for range 5 {
-			comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+			comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 				var deletable bool
 				err = tx.QueryRow(`SELECT EXISTS(
 					SELECT 1 FROM pdp_piecerefs

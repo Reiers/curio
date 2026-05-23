@@ -13,6 +13,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -30,12 +31,12 @@ const MinSizeForCache = uint64(32 * 1024 * 1024)
 const PaddedReadSize = 4 << 20
 
 type TaskPDPSaveCache struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	cpr *cachedreader.CachedPieceReader
 	idx *indexstore.IndexStore
 }
 
-func NewTaskPDPSaveCache(db *harmonydb.DB, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *TaskPDPSaveCache {
+func NewTaskPDPSaveCache(db harmonyquery.DBInterface, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *TaskPDPSaveCache {
 	return &TaskPDPSaveCache{
 		db:  db,
 		cpr: cpr,
@@ -172,7 +173,7 @@ func (t *TaskPDPSaveCache) TypeDetails() harmonytask.TaskTypeDetails {
 func (t *TaskPDPSaveCache) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string

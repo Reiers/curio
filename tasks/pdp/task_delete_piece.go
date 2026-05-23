@@ -12,6 +12,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -24,7 +25,7 @@ import (
 )
 
 type PDPTaskDeletePiece struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	sender    *message.SenderETH
 	ethClient ethchain.EthClient
 }
@@ -111,7 +112,7 @@ func (p *PDPTaskDeletePiece) Do(ctx context.Context, taskID harmonytask.TaskID, 
 	// Insert into message_waits_eth and pdp_data_set_delete
 	txHashLower := strings.ToLower(txHash.Hex())
 
-	comm, err := p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		n, err := tx.Exec(`UPDATE pdp_piece_delete SET tx_hash = $1, task_id = NULL WHERE task_id = $2`, txHashLower, taskID)
 		if err != nil {
 			return false, xerrors.Errorf("failed to update pdp_piece_delete: %w", err)
@@ -164,7 +165,7 @@ func (p *PDPTaskDeletePiece) TypeDetails() harmonytask.TaskTypeDetails {
 func (p *PDPTaskDeletePiece) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
@@ -197,7 +198,7 @@ func (p *PDPTaskDeletePiece) schedule(ctx context.Context, taskFunc harmonytask.
 
 func (p *PDPTaskDeletePiece) Adder(taskFunc harmonytask.AddTaskFunc) {}
 
-func NewPDPTaskDeletePiece(db *harmonydb.DB, sender *message.SenderETH, ethClient ethchain.EthClient) *PDPTaskDeletePiece {
+func NewPDPTaskDeletePiece(db harmonyquery.DBInterface, sender *message.SenderETH, ethClient ethchain.EthClient) *PDPTaskDeletePiece {
 	return &PDPTaskDeletePiece{
 		db:        db,
 		sender:    sender,

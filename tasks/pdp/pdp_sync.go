@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -18,11 +19,11 @@ import (
 )
 
 type PDPSyncTask struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 }
 
-func NewPDPSyncTask(db *harmonydb.DB, ethClient ethchain.EthClient) *PDPSyncTask {
+func NewPDPSyncTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient) *PDPSyncTask {
 	return &PDPSyncTask{
 		db:        db,
 		ethClient: ethClient,
@@ -89,7 +90,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 	}
 
 	// Update in DB
-	comm, err := P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Mark the data set as removed
 		if len(removedPieces) > 0 {
 			_, err = tx.Exec(`UPDATE pdp_data_set SET removed = TRUE, 

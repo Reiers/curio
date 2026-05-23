@@ -5,6 +5,7 @@ import (
 
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/pdp/contract/FWSS"
 )
@@ -40,7 +41,7 @@ func CalculateBackoffBlocks(failures int) int {
 
 // MarkDatasetProvingUnrecoverable marks a dataset as having an unrecoverable proving failure.
 // This is called when an unrecoverable error (like DataSetPaymentBeyondEndEpoch) is detected.
-func MarkDatasetProvingUnrecoverable(tx *harmonydb.Tx, dataSetId int64, currentHeight int64) error {
+func MarkDatasetProvingUnrecoverable(tx harmonyquery.TxInterface, dataSetId int64, currentHeight int64) error {
 	_, err := tx.Exec(`
 		UPDATE pdp_data_sets
 		SET unrecoverable_proving_failure_epoch = $2,
@@ -57,7 +58,7 @@ func MarkDatasetProvingUnrecoverable(tx *harmonydb.Tx, dataSetId int64, currentH
 // ApplyProvingBackoff increments the failure count and sets a backoff period.
 // If too many failures occur, marks the dataset as unrecoverable.
 // Returns true if the dataset was marked as unrecoverable.
-func ApplyProvingBackoff(tx *harmonydb.Tx, dataSetId int64, currentHeight int64) (unrecoverable bool, err error) {
+func ApplyProvingBackoff(tx harmonyquery.TxInterface, dataSetId int64, currentHeight int64) (unrecoverable bool, err error) {
 	// Get current failure count
 	var currentFailures int
 	err = tx.QueryRow(`
@@ -110,7 +111,7 @@ func ApplyProvingBackoff(tx *harmonydb.Tx, dataSetId int64, currentHeight int64)
 }
 
 // ResetProvingFailures resets the failure count after a successful prove.
-func ResetProvingFailures(ctx context.Context, db *harmonydb.DB, dataSetId int64) error {
+func ResetProvingFailures(ctx context.Context, db harmonyquery.DBInterface, dataSetId int64) error {
 	_, err := db.Exec(ctx, `
 		UPDATE pdp_data_sets
 		SET consecutive_prove_failures = 0,
@@ -128,7 +129,7 @@ func ResetProvingFailures(ctx context.Context, db *harmonydb.DB, dataSetId int64
 //
 // Returns (err) where err==nil means the task should complete (not retry),
 // and err!=nil means harmony should retry the task.
-func HandleProvingSendError(tx *harmonydb.Tx, dataSetId int64, currentHeight int64, sendErr error) error {
+func HandleProvingSendError(tx harmonyquery.TxInterface, dataSetId int64, currentHeight int64, sendErr error) error {
 	// Tier 1: Known unrecoverable errors, mark as unrecoverable immediately
 	if IsUnrecoverableError(sendErr) {
 		if markErr := MarkDatasetProvingUnrecoverable(tx, dataSetId, currentHeight); markErr != nil {

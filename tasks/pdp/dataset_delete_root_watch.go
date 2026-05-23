@@ -9,6 +9,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/chainsched"
 
@@ -22,7 +23,7 @@ type DataSetPieceDelete struct {
 	Hash    string  `db:"tx_hash"`
 }
 
-func NewWatcherPieceDelete(db *harmonydb.DB, pcs *chainsched.CurioChainSched) {
+func NewWatcherPieceDelete(db harmonyquery.DBInterface, pcs *chainsched.CurioChainSched) {
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		err := processPendingDataSetPieceDeletes(ctx, db)
 		if err != nil {
@@ -34,7 +35,7 @@ func NewWatcherPieceDelete(db *harmonydb.DB, pcs *chainsched.CurioChainSched) {
 	}
 }
 
-func processPendingDataSetPieceDeletes(ctx context.Context, db *harmonydb.DB) error {
+func processPendingDataSetPieceDeletes(ctx context.Context, db harmonyquery.DBInterface) error {
 	var dataSetPieceDeletes []DataSetPieceDelete
 	err := db.Select(ctx, &dataSetPieceDeletes, `
         SELECT id, tx_hash, pieces, set_id FROM pdp_piece_delete WHERE tx_hash IS NOT NULL`)
@@ -57,7 +58,7 @@ func processPendingDataSetPieceDeletes(ctx context.Context, db *harmonydb.DB) er
 	return nil
 }
 
-func processDataSetPieceDelete(ctx context.Context, db *harmonydb.DB, psd DataSetPieceDelete) error {
+func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface, psd DataSetPieceDelete) error {
 	var txReceiptJSON []byte
 	var txSuccess bool
 	err := db.QueryRow(ctx, `SELECT tx_receipt, tx_success FROM message_waits_eth WHERE signed_tx_hash = $1 
@@ -78,7 +79,7 @@ func processDataSetPieceDelete(ctx context.Context, db *harmonydb.DB, psd DataSe
 	}
 
 	if !txSuccess {
-		comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			n, err := tx.Exec(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
@@ -106,7 +107,7 @@ func processDataSetPieceDelete(ctx context.Context, db *harmonydb.DB, psd DataSe
 		return nil
 	}
 
-	comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		_, err = tx.Exec(`UPDATE pdp_dataset_piece SET removed = TRUE, 
                          remove_deal_id = $1, 
                          remove_message_hash = $2 

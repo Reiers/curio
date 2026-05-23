@@ -14,6 +14,7 @@ import (
 	"github.com/filecoin-project/go-padreader"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -37,12 +38,12 @@ var NotifyPollInterval = 5 * time.Second
 // The poll goroutine watches for uploads where the underlying piece is complete
 // but no finalization task has been assigned yet.
 type PDPNotifyTask struct {
-	db     *harmonydb.DB
+	db     harmonyquery.DBInterface
 	TF     promise.Promise[harmonytask.AddTaskFunc]
 	client *http.Client
 }
 
-func NewPDPNotifyTask(ctx context.Context, db *harmonydb.DB) *PDPNotifyTask {
+func NewPDPNotifyTask(ctx context.Context, db harmonyquery.DBInterface) *PDPNotifyTask {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
@@ -91,7 +92,7 @@ func (t *PDPNotifyTask) poll(ctx context.Context) {
 		for _, upload := range uploads {
 			failed := false
 
-			t.TF.Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+			t.TF.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 				n, err := tx.Exec(`
 					UPDATE pdp_piece_uploads
 					SET notify_task_id = $1
@@ -156,7 +157,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		}
 	}
 
-	comm, err := t.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Move the entry from pdp_piece_uploads to pdp_piecerefs
 		// Insert into pdp_piecerefs
 		// Set needs_save_cache=TRUE for large pieces to enable proactive caching

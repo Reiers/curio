@@ -24,11 +24,11 @@ import (
 var log = logger.Logger("pdp")
 
 type PDPNotifyTask struct {
-	db     *harmonydb.DB
+	db     harmonyquery.DBInterface
 	client *http.Client
 }
 
-func NewPDPNotifyTask(db *harmonydb.DB) *PDPNotifyTask {
+func NewPDPNotifyTask(db harmonyquery.DBInterface) *PDPNotifyTask {
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
@@ -83,7 +83,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 	}
 
 	// Move the entry from pdp_piece_uploads to pdp_piecerefs
-	comm, err := t.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		_, err := tx.Exec(`
 			INSERT INTO pdp_piecerefs (service, piece_cid, piece_ref, created_at) 
 			VALUES ($1, $2, $3, NOW())`,
@@ -137,7 +137,7 @@ func (t *PDPNotifyTask) TypeDetails() harmonytask.TaskTypeDetails {
 func (t *PDPNotifyTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // Assume we're done unless we find more tasks to schedule
 
 			// Query for pending notifications where:

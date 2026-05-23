@@ -9,6 +9,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/chainsched"
 
@@ -21,7 +22,7 @@ type DataSetDelete struct {
 	PID               int64  `db:"set_id"`
 }
 
-func NewWatcherDelete(db *harmonydb.DB, pcs *chainsched.CurioChainSched) {
+func NewWatcherDelete(db harmonyquery.DBInterface, pcs *chainsched.CurioChainSched) {
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		err := processPendingDataSetDeletes(ctx, db)
 		if err != nil {
@@ -33,7 +34,7 @@ func NewWatcherDelete(db *harmonydb.DB, pcs *chainsched.CurioChainSched) {
 	}
 }
 
-func processPendingDataSetDeletes(ctx context.Context, db *harmonydb.DB) error {
+func processPendingDataSetDeletes(ctx context.Context, db harmonyquery.DBInterface) error {
 	// Query for pdp_data_set_delete where txHash is not NULL
 	var dataSetDeletes []DataSetDelete
 
@@ -62,7 +63,7 @@ func processPendingDataSetDeletes(ctx context.Context, db *harmonydb.DB) error {
 	return nil
 }
 
-func processDataSetDelete(ctx context.Context, db *harmonydb.DB, psd DataSetDelete) error {
+func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd DataSetDelete) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	var txSuccess bool
@@ -88,7 +89,7 @@ func processDataSetDelete(ctx context.Context, db *harmonydb.DB, psd DataSetDele
 	if !txSuccess {
 		// This means msg failed, we should let the user know
 		// TODO: Review if error would be in receipt
-		comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			n, err := tx.Exec(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
@@ -116,7 +117,7 @@ func processDataSetDelete(ctx context.Context, db *harmonydb.DB, psd DataSetDele
 		return nil
 	}
 
-	comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 
 		n, err := tx.Exec(`UPDATE pdp_data_set SET removed = TRUE, 
                          remove_deal_id = $1, 

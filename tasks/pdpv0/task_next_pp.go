@@ -14,6 +14,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -29,7 +30,7 @@ import (
 )
 
 type NextProvingPeriodTask struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
 
@@ -42,7 +43,7 @@ type NextProvingPeriodTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)
 }
 
-func NewNextProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH) *NextProvingPeriodTask {
+func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH) *NextProvingPeriodTask {
 	n := &NextProvingPeriodTask{
 		db:        db,
 		ethClient: ethClient,
@@ -74,7 +75,7 @@ func NewNextProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fi
 		}
 
 		for _, ps := range toCallNext {
-			n.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			n.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Update pdp_data_sets to set challenge_request_task_id = id
 				affected, err := tx.Exec(`
                         UPDATE pdp_data_sets
@@ -104,7 +105,7 @@ func NewNextProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fi
 // initialized (e.g. ProvingPeriodNotInitialized error from the contract). InitPP
 // computes a fresh challenge window from config.InitChallengeWindowStart, which is
 // only valid for first-time initialization.
-func resetDatasetToInitPP(ctx context.Context, db *harmonydb.DB, dataSetId int64) error {
+func resetDatasetToInitPP(ctx context.Context, db harmonyquery.DBInterface, dataSetId int64) error {
 	log.Infow("resetting dataset to init proving period state", "dataSetId", dataSetId)
 	_, err := db.Exec(ctx, `
              UPDATE pdp_data_sets
@@ -226,7 +227,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	txHash, sendErr := n.sender.Send(ctx, fromAddress, txEth, reason)
 	if sendErr != nil {
 		currentHeight := int64(ts.Height())
-		comm, err := n.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := n.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			handleErr := HandleProvingSendError(tx, dataSetId, currentHeight, sendErr)
 			if handleErr != nil {
 				return false, xerrors.Errorf("failed to handle proving send error: %w", handleErr)
@@ -243,7 +244,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	}
 
 	// Update the database in a transaction
-	_, err = n.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = n.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update pdp_data_sets
 		affected, err := tx.Exec(`
             UPDATE pdp_data_sets

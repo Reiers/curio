@@ -13,6 +13,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -31,12 +32,12 @@ type PDPServiceNodeApi interface {
 }
 
 type PDPTaskAddPiece struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	sender    *message.SenderETH
 	ethClient ethchain.EthClient
 }
 
-func NewPDPTaskAddPiece(db *harmonydb.DB, sender *message.SenderETH, ethClient ethchain.EthClient) *PDPTaskAddPiece {
+func NewPDPTaskAddPiece(db harmonyquery.DBInterface, sender *message.SenderETH, ethClient ethchain.EthClient) *PDPTaskAddPiece {
 	return &PDPTaskAddPiece{
 		db:        db,
 		sender:    sender,
@@ -134,7 +135,7 @@ func (p *PDPTaskAddPiece) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 	txHashLower := strings.ToLower(txHash.Hex())
 
 	// Insert into message_waits_eth and pdp_dataset_piece
-	_, err = p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Insert into message_waits_eth
 		_, err = tx.Exec(`
           INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
@@ -188,7 +189,7 @@ func (p *PDPTaskAddPiece) TypeDetails() harmonytask.TaskTypeDetails {
 func (p *PDPTaskAddPiece) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string

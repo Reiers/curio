@@ -17,6 +17,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -61,7 +62,7 @@ var (
 // Future enhancement: implement verified piece retrieval per FRC-XXXX
 // for streaming verification with intermediate tree proofs.
 type PDPPullPieceTask struct {
-	db      *harmonydb.DB
+	db      harmonyquery.DBInterface
 	storage paths.StashStore
 
 	TF promise.Promise[harmonytask.AddTaskFunc]
@@ -70,7 +71,7 @@ type PDPPullPieceTask struct {
 }
 
 // NewPDPPullPieceTask creates a new PDPPullPieceTask
-func NewPDPPullPieceTask(ctx context.Context, db *harmonydb.DB, storage paths.StashStore, max int) *PDPPullPieceTask {
+func NewPDPPullPieceTask(ctx context.Context, db harmonyquery.DBInterface, storage paths.StashStore, max int) *PDPPullPieceTask {
 	t := &PDPPullPieceTask{
 		db:      db,
 		storage: storage,
@@ -153,7 +154,7 @@ func (t *PDPPullPieceTask) pollPullItems(ctx context.Context) {
 			fetchID := item.FetchID
 			pieceCid := item.PieceCid
 
-			t.TF.Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+			t.TF.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 				// Atomically assign task_id, with same checks as the SELECT query
 				// to prevent race with concurrent parked_pieces creation
 				n, err := tx.Exec(`
@@ -246,7 +247,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	paddedSize := pdp.PadPieceSize(item.PieceRawSize)
 
 	// Create parked_pieces entry in a transaction
-	_, err = t.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Get the service from pdp_piece_pulls (via fetch_id)
 		var service string
 		err := tx.QueryRow(`

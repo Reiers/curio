@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/pdp/contract"
@@ -36,7 +37,7 @@ type PieceAddEntry struct {
 
 // processPendingDataSetPieceAdds processes piece additions that have been confirmed on-chain
 // it is called from proofset_watch.go
-func processPendingDataSetPieceAdds(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) error {
+func processPendingDataSetPieceAdds(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	// Query for pdp_data_set_piece_adds entries where add_message_ok = TRUE
 	var pieceAdds []DataSetPieceAdd
 
@@ -67,7 +68,7 @@ func processPendingDataSetPieceAdds(ctx context.Context, db *harmonydb.DB, ethCl
 	return nil
 }
 
-func processDataSetPieceAdd(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient, pieceAdd DataSetPieceAdd) error {
+func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pieceAdd DataSetPieceAdd) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	err := db.QueryRow(ctx, `
@@ -95,7 +96,7 @@ func processDataSetPieceAdd(ctx context.Context, db *harmonydb.DB, ethClient eth
 	return nil
 }
 
-func extractAndInsertPiecesFromReceipt(ctx context.Context, db *harmonydb.DB, receipt *types.Receipt, pieceAdd DataSetPieceAdd) error {
+func extractAndInsertPiecesFromReceipt(ctx context.Context, db harmonyquery.DBInterface, receipt *types.Receipt, pieceAdd DataSetPieceAdd) error {
 	if !pieceAdd.DataSet.Valid {
 		var err error
 		pieceAdd.DataSet.Int64, err = extractDataSetIdFromReceipt(receipt)
@@ -178,7 +179,7 @@ func extractAndInsertPiecesFromReceipt(ctx context.Context, db *harmonydb.DB, re
 	// Now we have the firstAdded pieceId, proceed with database operations
 
 	// Begin a database transaction
-	_, err = db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update data set for initialization upon first add
 		_, err = tx.Exec(`
 			UPDATE pdp_data_sets SET init_ready = true

@@ -10,6 +10,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -22,12 +23,12 @@ import (
 )
 
 type DeleteDataSetTask struct {
-	db        *harmonydb.DB
+	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
 }
 
-func NewDeleteDataSetTask(db *harmonydb.DB, ethClient ethchain.EthClient, sender *message.SenderETH) *DeleteDataSetTask {
+func NewDeleteDataSetTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH) *DeleteDataSetTask {
 	return &DeleteDataSetTask{
 		db:        db,
 		ethClient: ethClient,
@@ -103,7 +104,7 @@ func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 		return false, xerrors.Errorf("failed to send transaction: %w", err)
 	}
 
-	comm, err := t.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		n, err := tx.Exec(`UPDATE pdp_delete_data_set SET 
                                delete_tx_hash = $2, 
                                after_delete_data_set = TRUE,
@@ -160,7 +161,7 @@ func (t *DeleteDataSetTask) schedule(ctx context.Context, addTaskFunc harmonytas
 	var stop bool
 
 	for !stop {
-		addTaskFunc(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		addTaskFunc(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true
 
 			current, err := t.ethClient.BlockNumber(ctx)
