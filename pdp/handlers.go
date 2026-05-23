@@ -23,7 +23,7 @@ import (
 
 	"github.com/filecoin-project/curio/alertmanager"
 	"github.com/filecoin-project/curio/api"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/lib/paths"
 	ipni_provider "github.com/filecoin-project/curio/market/ipni/ipni-provider"
@@ -61,7 +61,7 @@ const (
 // PDPService represents the service for managing data sets and pieces
 type PDPService struct {
 	Auth
-	db      *harmonydb.DB
+	db      harmonyquery.DBInterface
 	storage paths.StashStore
 
 	sender    *message.SenderETH
@@ -82,7 +82,7 @@ type PDPServiceNodeApi interface {
 // NewPDPService creates a new instance of PDPService with the provided stores.
 func NewPDPService(
 	ctx context.Context,
-	db *harmonydb.DB,
+	db harmonyquery.DBInterface,
 	stor paths.StashStore,
 	ec ethchain.EthClient,
 	fc PDPServiceNodeApi,
@@ -256,7 +256,7 @@ func (p *PDPService) handleGetPieceStatus(w http.ResponseWriter, r *http.Request
 		Provider                 sql.NullString `db:"provider"`
 	}
 
-	err = p.db.Select(ctx, &results, `
+	err = p.db.SelectI(ctx, &results, `
 		SELECT
 			pr.piece_cid,
 			pp.piece_raw_size,
@@ -435,7 +435,7 @@ func (p *PDPService) handleGetPieceStatus(w http.ResponseWriter, r *http.Request
 // getSenderAddress retrieves the sender address from the database where role = 'pdp' limit 1
 func (p *PDPService) getSenderAddress(ctx context.Context) (common.Address, error) {
 	var addressStr string
-	err := p.db.QueryRow(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&addressStr)
+	err := p.db.QueryRowI(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&addressStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return common.Address{}, errors.New("no sender address with role 'pdp' found")
@@ -492,7 +492,7 @@ func (p *PDPService) handleGetDataSetCreationStatus(w http.ResponseWriter, r *ht
 		Service           string `db:"service"`
 	}
 
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT create_message_hash, ok, data_set_created, service
         FROM pdp_data_set_creates
         WHERE create_message_hash = $1
@@ -529,7 +529,7 @@ func (p *PDPService) handleGetDataSetCreationStatus(w http.ResponseWriter, r *ht
 
 	// Now get the tx_status from message_waits_eth
 	var txStatus string
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT tx_status
         FROM message_waits_eth
         WHERE signed_tx_hash = $1
@@ -549,7 +549,7 @@ func (p *PDPService) handleGetDataSetCreationStatus(w http.ResponseWriter, r *ht
 	if dataSetCreate.DataSetCreated {
 		// The data set has been created, get the dataSetId from pdp_data_sets
 		var dataSetId uint64
-		err = p.db.QueryRow(ctx, `
+		err = p.db.QueryRowI(ctx, `
             SELECT id
             FROM pdp_data_sets
             WHERE create_message_hash = $1
@@ -613,7 +613,7 @@ func (p *PDPService) handleGetDataSet(w http.ResponseWriter, r *http.Request) {
 		Service string `db:"service"`
 	}
 
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT id, service
         FROM pdp_data_sets
         WHERE id = $1
@@ -646,7 +646,7 @@ func (p *PDPService) handleGetDataSet(w http.ResponseWriter, r *http.Request) {
 		SubPieceRawSize uint64 `db:"sub_piece_raw_size"`
 	}
 
-	err = p.db.Select(ctx, &pieces, `
+	err = p.db.SelectI(ctx, &pieces, `
         SELECT
             dsp.piece_id,
             dsp.piece,
@@ -670,7 +670,7 @@ func (p *PDPService) handleGetDataSet(w http.ResponseWriter, r *http.Request) {
 
 	// Step 6: Get the next challenge epoch (can be NULL for uninitialized data sets)
 	var nextChallengeEpoch *int64
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT prove_at_epoch
         FROM pdp_data_sets
         WHERE id = $1
@@ -813,7 +813,7 @@ func (p *PDPService) handleGetPieceAdditionStatus(w http.ResponseWriter, r *http
 
 	// Step 3: Verify data set ownership
 	var dataSetService string
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
 		SELECT service
 		FROM pdp_data_sets
 		WHERE id = $1
@@ -845,7 +845,7 @@ func (p *PDPService) handleGetPieceAdditionStatus(w http.ResponseWriter, r *http
 	}
 
 	var pieceAdds []PieceAddInfo
-	err = p.db.Select(ctx, &pieceAdds, `
+	err = p.db.SelectI(ctx, &pieceAdds, `
 		SELECT piece, add_message_index, sub_piece, sub_piece_offset,
 		       sub_piece_size, add_message_ok, pieces_added
 		FROM pdp_data_set_piece_adds
@@ -864,7 +864,7 @@ func (p *PDPService) handleGetPieceAdditionStatus(w http.ResponseWriter, r *http
 
 	// Step 5: Get transaction status from message_waits_eth
 	var txStatus string
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
 		SELECT tx_status FROM message_waits_eth WHERE signed_tx_hash = $1
 	`, txHash).Scan(&txStatus)
 	if err != nil {
@@ -887,7 +887,7 @@ func (p *PDPService) handleGetPieceAdditionStatus(w http.ResponseWriter, r *http
 	if txStatus == "confirmed" && len(pieceAdds) > 0 && pieceAdds[0].AddMessageOK != nil && *pieceAdds[0].AddMessageOK {
 		// Query pdp_data_set_pieces directly using the transaction hash
 		// This gives us the exact pieces added in THIS transaction even if there are duplicate pieces
-		err = p.db.Select(ctx, &confirmedPieceIds, `
+		err = p.db.SelectI(ctx, &confirmedPieceIds, `
 			SELECT DISTINCT piece_id
 			FROM pdp_data_set_pieces
 			WHERE data_set = $1
@@ -983,7 +983,7 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 
 	// check if the data set belongs to the service in pdp_data_sets
 	var dataSetService string
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
 			SELECT service
 			FROM pdp_data_sets
 			WHERE id = $1
@@ -1035,7 +1035,7 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 
 	// Check if we have this piece or not
 	var found bool
-	err = p.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set_pieces WHERE data_set = $1 AND piece_id = $2)`, dataSetId, pieceID).Scan(&found)
+	err = p.db.QueryRowI(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set_pieces WHERE data_set = $1 AND piece_id = $2)`, dataSetId, pieceID).Scan(&found)
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Failed to query piece existence", err)
 		return
@@ -1092,9 +1092,9 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 	txHashLower := strings.ToLower(txHash.Hex())
 	log.Infow("PDP DeletePiece: Creating transaction tracking record", "txHash", txHashLower)
 
-	_, err = p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Insert into message_waits_eth
-		_, err := tx.Exec(`
+		_, err := tx.ExecI(`
 			INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
 			VALUES ($1, $2)
 		`, txHashLower, "pending")
@@ -1105,7 +1105,7 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 			return false, err
 		}
 
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			UPDATE pdp_data_set_pieces
 			SET rm_message_hash = $1
 			WHERE data_set = $2 AND piece_id = $3`,
@@ -1117,7 +1117,7 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 		log.Infow("scheduled user requested deletion", "dataSetId", dataSetId, "pieceID", pieceID, "txHash", txHashLower)
 
 		return true, nil
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Failed to schedule delete piece", err)
 		return
@@ -1173,7 +1173,7 @@ func (p *PDPService) handleGetDataSetPiece(w http.ResponseWriter, r *http.Reques
 
 	// Step 3: Verify ownership and get piece details
 	var pieceCid string
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
 		SELECT DISTINCT r.piece
 		FROM pdp_data_set_pieces r
 		JOIN pdp_data_sets ps ON ps.id = r.data_set
@@ -1195,7 +1195,7 @@ func (p *PDPService) handleGetDataSetPiece(w http.ResponseWriter, r *http.Reques
 	}
 
 	var subPieces []SubPieceInfo
-	err = p.db.Select(ctx, &subPieces, `
+	err = p.db.SelectI(ctx, &subPieces, `
 		SELECT sub_piece, sub_piece_offset
 		FROM pdp_data_set_pieces
 		WHERE data_set = $1 AND piece_id = $2
@@ -1238,10 +1238,10 @@ func (p *PDPService) handleGetDataSetPiece(w http.ResponseWriter, r *http.Reques
 }
 
 func (p *PDPService) cleanup(ctx context.Context) {
-	rm := func(ctx context.Context, db *harmonydb.DB) {
+	rm := func(ctx context.Context, db harmonyquery.DBInterface) {
 		var RefIDs []int64
 
-		err := db.QueryRow(ctx, `SELECT COALESCE(array_agg(piece_ref), '{}') AS ref_ids
+		err := db.QueryRowI(ctx, `SELECT COALESCE(array_agg(piece_ref), '{}') AS ref_ids
 												FROM pdp_piece_streaming_uploads
 												WHERE complete = TRUE
 												  AND completed_at <= TIMEZONE('UTC', NOW()) - INTERVAL '60 minutes';`).Scan(&RefIDs)
@@ -1250,7 +1250,7 @@ func (p *PDPService) cleanup(ctx context.Context) {
 		}
 
 		if len(RefIDs) > 0 {
-			_, err := db.Exec(ctx, `DELETE FROM parked_piece_refs WHERE ref_id = ANY($1);`, RefIDs)
+			_, err := db.ExecI(ctx, `DELETE FROM parked_piece_refs WHERE ref_id = ANY($1);`, RefIDs)
 			if err != nil {
 				log.Errorw("failed to delete non-finalized uploads", "error", err)
 			}
@@ -1258,7 +1258,7 @@ func (p *PDPService) cleanup(ctx context.Context) {
 
 		// Clean up old piece pull records (older than 5 days)
 		// CASCADE deletes pdp_piece_pull_items automatically
-		_, err = db.Exec(ctx, `DELETE FROM pdp_piece_pulls WHERE created_at < NOW() - INTERVAL '5 days'`)
+		_, err = db.ExecI(ctx, `DELETE FROM pdp_piece_pulls WHERE created_at < NOW() - INTERVAL '5 days'`)
 		if err != nil {
 			log.Errorw("failed to delete old piece pull records", "error", err)
 		}

@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/pdp/contract"
 )
 
@@ -135,7 +135,7 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 		"service", serviceLabel,
 		"recordKeeper", recordKeeperAddr.Hex())
 	// Begin a database transaction
-	comm, err := p.db.BeginTransaction(workCtx, func(tx *harmonydb.Tx) (bool, error) {
+	comm, err := p.db.BeginTransactionI(workCtx, func(tx harmonyquery.TxInterface) (bool, error) {
 		err := p.insertMessageWaitsAndDataSetCreate(tx, txHashLower, serviceLabel)
 		if err != nil {
 			return false, err
@@ -159,7 +159,7 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 		}
 
 		return true, err
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		log.Errorf("Failed to insert into message_waits_eth, pdp_data_set_piece_adds and pdp_data_set_creates: %+v", err)
 		httpServerError(w, http.StatusInternalServerError, "Internal server error", err)
@@ -305,14 +305,14 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 		"recordKeeper", recordKeeperAddr.Hex())
 
 	// Begin a database transaction
-	comm, err := p.db.BeginTransaction(workCtx, func(tx *harmonydb.Tx) (bool, error) {
+	comm, err := p.db.BeginTransactionI(workCtx, func(tx harmonyquery.TxInterface) (bool, error) {
 		err := p.insertMessageWaitsAndDataSetCreate(tx, txHashLower, serviceLabel)
 		if err != nil {
 			return false, err
 		}
 
 		return true, nil
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		log.Errorf("Failed to insert database tracking records: %+v", err)
 		httpServerError(w, http.StatusInternalServerError, "Internal server error", err)
@@ -331,12 +331,12 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 }
 
 // insertMessageWaitsAndDataSetCreate inserts records into message_waits_eth and pdp_data_set_creates
-func (p *PDPService) insertMessageWaitsAndDataSetCreate(tx *harmonydb.Tx, txHashHex string, serviceLabel string) error {
+func (p *PDPService) insertMessageWaitsAndDataSetCreate(tx harmonyquery.TxInterface, txHashHex string, serviceLabel string) error {
 	// Insert into message_waits_eth
 	log.Debugw("Inserting into message_waits_eth",
 		"txHash", txHashHex,
 		"status", "pending")
-	n, err := tx.Exec(`
+	n, err := tx.ExecI(`
             INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
             VALUES ($1, $2)
         `, txHashHex, "pending")
@@ -355,7 +355,7 @@ func (p *PDPService) insertMessageWaitsAndDataSetCreate(tx *harmonydb.Tx, txHash
 	log.Debugw("Inserting into pdp_data_set_creates",
 		"txHash", txHashHex,
 		"service", serviceLabel)
-	n, err = tx.Exec(`
+	n, err = tx.ExecI(`
             INSERT INTO pdp_data_set_creates (create_message_hash, service)
             VALUES ($1, $2)
         `, txHashHex, serviceLabel)

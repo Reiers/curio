@@ -25,7 +25,7 @@ import (
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
 	"github.com/filecoin-project/go-state-types/abi"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/dealdata"
 	"github.com/filecoin-project/curio/lib/parkpiece"
 	"github.com/filecoin-project/curio/lib/proof"
@@ -74,7 +74,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 	var uploadURL string
 	var responseStatus int
 
-	_, err = p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err = p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		dmh, err := multihash.Decode(pieceCidV1.Hash())
 		if err != nil {
 			return false, fmt.Errorf("failed to decode multihash: %w", err)
@@ -82,7 +82,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 
 		// Check if a 'parked_pieces' entry exists for the given 'piece_cid'
 		var parkedPieceID int64
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
             SELECT id FROM parked_pieces WHERE piece_cid = $1 AND long_term = TRUE AND complete = TRUE
         `, pieceCidV1.String()).Scan(&parkedPieceID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -94,7 +94,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 			// Piece is already stored
 			// Create a new 'parked_piece_refs' entry
 			var parkedPieceRefID int64
-			err = tx.QueryRow(`
+			err = tx.QueryRowI(`
                 INSERT INTO parked_piece_refs (piece_id, long_term)
                 VALUES ($1, TRUE) RETURNING ref_id
             `, parkedPieceID).Scan(&parkedPieceRefID)
@@ -105,7 +105,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 
 			// Create a new 'pdp_piece_uploads' entry pointing to the 'parked_piece_refs' entry
 			uploadUUID = uuid.New()
-			_, err = tx.Exec(`
+			_, err = tx.ExecI(`
                 INSERT INTO pdp_piece_uploads (id, service, piece_cid, notify_url, piece_ref, check_hash_codec, check_hash, check_size)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             `, uploadUUID.String(), serviceID, pieceCidV1.String(), req.Notify, parkedPieceRefID, multicodec.Sha2_256Trunc254Padded.String(), dmh.Digest, size)
@@ -122,7 +122,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 		// Piece does not exist, proceed to create a new upload request
 		uploadUUID = uuid.New()
 
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
        INSERT INTO pdp_piece_uploads (id, service, piece_cid, notify_url, check_hash_codec, check_hash, check_size)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
    `, uploadUUID.String(), serviceID, pieceCidV1.String(), req.Notify, multicodec.Sha2_256Trunc254Padded.String(), dmh.Digest, size)
@@ -136,7 +136,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 		responseStatus = http.StatusCreated
 
 		return true, nil // Commit the transaction
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Failed to process request: "+err.Error(), err)
 		return
@@ -182,7 +182,7 @@ func (p *PDPService) handlePieceUpload(w http.ResponseWriter, r *http.Request) {
 	var checkSize int64
 
 	var pieceRef sql.NullInt64
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT piece_cid, notify_url, piece_ref, check_size FROM pdp_piece_uploads WHERE id = $1
     `, uploadUUID.String()).Scan(&pieceCIDStr, &notifyURL, &pieceRef, &checkSize)
 	if err != nil {
@@ -297,7 +297,7 @@ func (p *PDPService) handlePieceUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	didCommit, err := p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	didCommit, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// 1. Create a long-term parked piece entry
 		parkedPieceID, err := parkpiece.Upsert(tx, pieceCIDComputed.String(), int64(paddedPieceSize), readSize, true)
 		if err != nil {
@@ -316,7 +316,7 @@ func (p *PDPService) handlePieceUpload(w http.ResponseWriter, r *http.Request) {
 		dataURL := stashURL.String()
 
 		var pieceRefID int64
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
             INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
             VALUES ($1, $2, TRUE) RETURNING ref_id
         `, parkedPieceID, dataURL).Scan(&pieceRefID)
@@ -325,7 +325,7 @@ func (p *PDPService) handlePieceUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Debugw("[handlePieceUpload] -- parked piece ref created", "uploadUUID", uploadUUID)
 		// 3. Update the pdp_piece_uploads entry to contain the created piece_ref
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
             UPDATE pdp_piece_uploads SET piece_ref = $1, piece_cid = $2 WHERE id = $3
         `, pieceRefID, pieceCIDComputed.String(), uploadUUID.String())
 		if err != nil {
@@ -333,7 +333,7 @@ func (p *PDPService) handlePieceUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Debugw("[handlePieceUpload] -- pdp_piece_uploads entry updated", "uploadUUID", uploadUUID)
 		return true, nil // Commit the transaction
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 
 	if err != nil || !didCommit {
 		// Remove the stash file as the transaction failed
@@ -371,7 +371,7 @@ func (p *PDPService) handleFindPiece(w http.ResponseWriter, r *http.Request) {
 
 	// Verify that a 'parked_pieces' entry exists for the given 'piece_cid'
 	var exist bool
-	err = p.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1) AS exist;`, pieceCidV1.String()).Scan(&exist)
+	err = p.db.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1) AS exist;`, pieceCidV1.String()).Scan(&exist)
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Database error", err)
 		return
@@ -412,7 +412,7 @@ func (p *PDPService) handleStreamingUploadURL(w http.ResponseWriter, r *http.Req
 	uploadUUID := uuid.New()
 	uploadURL := path.Join(PDPRoutePath, "/piece/uploads", uploadUUID.String())
 
-	n, err := p.db.Exec(r.Context(), `INSERT INTO pdp_piece_streaming_uploads (id, service) VALUES ($1, $2)`, uploadUUID.String(), serviceID)
+	n, err := p.db.ExecI(r.Context(), `INSERT INTO pdp_piece_streaming_uploads (id, service) VALUES ($1, $2)`, uploadUUID.String(), serviceID)
 	if err != nil {
 		log.Errorw("Failed to create upload request in database", "error", err)
 		httpServerError(w, http.StatusInternalServerError, "Failed to create upload request", err)
@@ -451,7 +451,7 @@ func (p *PDPService) handleStreamingUpload(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 
 	var exists bool
-	err = p.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2)`, uploadUUID.String(), serviceID).Scan(&exists)
+	err = p.db.QueryRowI(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2)`, uploadUUID.String(), serviceID).Scan(&exists)
 	if err != nil {
 		log.Errorw("Failed to query pdp_piece_streaming_uploads", "error", err)
 		httpServerError(w, http.StatusInternalServerError, "Database error", err)
@@ -517,7 +517,7 @@ func (p *PDPService) handleStreamingUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	didCommit, err := p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	didCommit, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// 1. Create a long-term parked piece entry
 		parkedPieceID, err := parkpiece.Upsert(tx, pcid.String(), int64(paddedPieceSize), readSize, true)
 		if err != nil {
@@ -536,7 +536,7 @@ func (p *PDPService) handleStreamingUpload(w http.ResponseWriter, r *http.Reques
 		dataURL := stashURL.String()
 
 		var pieceRefID int64
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
             INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
             VALUES ($1, $2, TRUE) RETURNING ref_id
         `, parkedPieceID, dataURL).Scan(&pieceRefID)
@@ -545,7 +545,7 @@ func (p *PDPService) handleStreamingUpload(w http.ResponseWriter, r *http.Reques
 		}
 
 		// 3. Update the pdp_piece_streaming_uploads entry
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
             UPDATE pdp_piece_streaming_uploads SET piece_ref = $1, piece_cid = $2, piece_size = $3, raw_size = $4, complete = TRUE, completed_at = NOW() AT TIME ZONE 'UTC' WHERE id = $5 and service = $6
         `, pieceRefID, pcid.String(), paddedPieceSize, readSize, uploadUUID.String(), serviceID)
 		if err != nil {
@@ -553,7 +553,7 @@ func (p *PDPService) handleStreamingUpload(w http.ResponseWriter, r *http.Reques
 		}
 
 		return true, nil // Commit the transaction
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 
 	if err != nil || !didCommit {
 		// Remove the stash file as the transaction failed
@@ -594,7 +594,7 @@ func (p *PDPService) handleFinalizeStreamingUpload(w http.ResponseWriter, r *htt
 	ctx := r.Context()
 
 	var exists bool
-	err = p.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2)`, uploadUUID.String(), serviceID).Scan(&exists)
+	err = p.db.QueryRowI(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2)`, uploadUUID.String(), serviceID).Scan(&exists)
 	if err != nil {
 		log.Errorw("Failed to query pdp_piece_streaming_uploads", "error", err)
 		httpServerError(w, http.StatusInternalServerError, "Database error", err)
@@ -635,7 +635,7 @@ func (p *PDPService) handleFinalizeStreamingUpload(w http.ResponseWriter, r *htt
 	var pref int64
 	var rawSize uint64
 
-	err = p.db.QueryRow(ctx, `SELECT piece_cid, piece_ref, raw_size FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2 AND complete = TRUE`, uploadUUID.String(), serviceID).Scan(&dPcidStr, &pref, &rawSize)
+	err = p.db.QueryRowI(ctx, `SELECT piece_cid, piece_ref, raw_size FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2 AND complete = TRUE`, uploadUUID.String(), serviceID).Scan(&dPcidStr, &pref, &rawSize)
 	if err != nil {
 		log.Errorw("Failed to query pdp_piece_streaming_uploads", "error", err)
 		httpServerError(w, http.StatusInternalServerError, "Database error", err)
@@ -662,8 +662,8 @@ func (p *PDPService) handleFinalizeStreamingUpload(w http.ResponseWriter, r *htt
 		return
 	}
 
-	comm, err := p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
-		n, err := tx.Exec(`
+	comm, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		n, err := tx.ExecI(`
        INSERT INTO pdp_piece_uploads (id, service, piece_cid, notify_url, check_hash_codec, check_hash, check_size, piece_ref)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
    `, uploadUUID.String(), serviceID, pieceCidV1.String(), req.Notify, multicodec.Sha2_256Trunc254Padded.String(), digest, pieceInfo.RawSize, pref)
@@ -674,12 +674,12 @@ func (p *PDPService) handleFinalizeStreamingUpload(w http.ResponseWriter, r *htt
 			return false, fmt.Errorf("failed to store upload request in database: expected 1 row but got %d", n)
 		}
 
-		_, err = tx.Exec(`DELETE FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2 AND complete = TRUE`, uploadUUID.String(), serviceID)
+		_, err = tx.ExecI(`DELETE FROM pdp_piece_streaming_uploads WHERE id = $1 AND service = $2 AND complete = TRUE`, uploadUUID.String(), serviceID)
 		if err != nil {
 			return false, fmt.Errorf("failed to delete pdp_piece_streaming_uploads entry: %w", err)
 		}
 		return true, nil
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		log.Errorw("Failed to process piece upload", "error", err)
 		httpServerError(w, http.StatusInternalServerError, "Failed to process piece upload", err)

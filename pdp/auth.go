@@ -10,7 +10,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 )
 
 type Auth interface {
@@ -26,7 +26,7 @@ func (a *NullAuth) AuthService(r *http.Request) (string, error) {
 }
 
 type JWTAuth struct {
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 }
 
 var _ Auth = (*JWTAuth)(nil)
@@ -83,7 +83,7 @@ func (a *JWTAuth) AuthService(r *http.Request) (string, error) {
 		// Query the database for the public key using serviceID
 		var pubKeyBytes []byte
 		ctx := r.Context()
-		err := a.db.QueryRow(ctx, `
+		err := a.db.QueryRowI(ctx, `
             SELECT pubkey FROM pdp_services WHERE service_label=$1
         `, service).Scan(&pubKeyBytes)
 		if err != nil {

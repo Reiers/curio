@@ -15,15 +15,15 @@ import (
 
 	commcid "github.com/filecoin-project/go-fil-commcid"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/pdp/contract"
 )
 
 // getPDPSenderAddress retrieves the PDP key address from the database
-func getPDPSenderAddress(ctx context.Context, db *harmonydb.DB) (common.Address, error) {
+func getPDPSenderAddress(ctx context.Context, db harmonyquery.DBInterface) (common.Address, error) {
 	var privateKeyData []byte
-	err := db.QueryRow(ctx,
+	err := db.QueryRowI(ctx,
 		`SELECT private_key FROM eth_keys WHERE role = 'pdp'`).Scan(&privateKeyData)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("fetching pdp private key from db: %w", err)
@@ -126,12 +126,12 @@ type AddPiecesValidator interface {
 // EthCallValidator validates via eth_call to PDPVerifier contract
 type EthCallValidator struct {
 	ethClient  ethchain.EthClient
-	db         *harmonydb.DB
+	db         harmonyquery.DBInterface
 	senderAddr common.Address // cached, lazily loaded
 }
 
 // NewEthCallValidator creates a validator that uses eth_call
-func NewEthCallValidator(ethClient ethchain.EthClient, db *harmonydb.DB) *EthCallValidator {
+func NewEthCallValidator(ethClient ethchain.EthClient, db harmonyquery.DBInterface) *EthCallValidator {
 	return &EthCallValidator{ethClient: ethClient, db: db}
 }
 
@@ -612,11 +612,11 @@ func (h *PullHandler) determinePieceStatus(ctx context.Context, pullID int64, pi
 
 // dbPullStore implements PullStore using harmonydb
 type dbPullStore struct {
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 }
 
 // NewDBPullStore creates a PullStore backed by harmonydb
-func NewDBPullStore(db *harmonydb.DB) PullStore {
+func NewDBPullStore(db harmonyquery.DBInterface) PullStore {
 	return &dbPullStore{db: db}
 }
 
@@ -629,7 +629,7 @@ func (s *dbPullStore) GetPullByKey(ctx context.Context, service string, hash []b
 		RecordKeeper  string `db:"record_keeper"`
 	}
 
-	err := s.db.Select(ctx, &records, `
+	err := s.db.SelectI(ctx, &records, `
 		SELECT id, service, extra_data_hash, data_set_id, record_keeper
 		FROM pdp_piece_pulls
 		WHERE service = $1 AND extra_data_hash = $2 AND data_set_id = $3 AND record_keeper = $4
@@ -654,9 +654,9 @@ func (s *dbPullStore) GetPullByKey(ctx context.Context, service string, hash []b
 func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, error) {
 	var pullID int64
 
-	_, err := s.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err := s.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Insert pull record and get the auto-generated ID
-		err := tx.QueryRow(`
+		err := tx.QueryRowI(`
 			INSERT INTO pdp_piece_pulls (service, extra_data_hash, data_set_id, record_keeper)
 			VALUES ($1, $2, $3, $4)
 			RETURNING id
@@ -667,7 +667,7 @@ func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord
 
 		// Insert piece items with raw size and source_url for task to pick up
 		for _, piece := range pieces {
-			_, err := tx.Exec(`
+			_, err := tx.ExecI(`
 				INSERT INTO pdp_piece_pull_items (fetch_id, piece_cid, piece_raw_size, source_url)
 				VALUES ($1, $2, $3, $4)
 			`, pullID, piece.CidV1.String(), piece.RawSize, piece.SourceURL)
@@ -677,7 +677,7 @@ func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord
 		}
 
 		return true, nil
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 
 	return pullID, err
 }
@@ -702,7 +702,7 @@ func (s *dbPullStore) GetPieceStatuses(ctx context.Context, pieceCids []cid.Cid)
 	}
 
 	// Batch query with ANY() for all CIDs at once
-	err := s.db.Select(ctx, &pieces, `
+	err := s.db.SelectI(ctx, &pieces, `
 		SELECT pp.piece_cid, pp.complete, pp.task_id,
 		       (ht.id IS NOT NULL) as task_exists,
 		       COALESCE(ht.retries, 0) as retries
@@ -748,7 +748,7 @@ func (s *dbPullStore) GetPullItemStatuses(ctx context.Context, pullID int64, pie
 	}
 
 	// Batch query with ANY() for all CIDs at once
-	err := s.db.Select(ctx, &items, `
+	err := s.db.SelectI(ctx, &items, `
 		SELECT fi.piece_cid, fi.task_id, fi.failed,
 		       (ht.id IS NOT NULL) as task_exists,
 		       COALESCE(ht.retries, 0) as retries
@@ -782,7 +782,7 @@ func (s *dbPullStore) GetPullPieces(ctx context.Context, pullID int64) ([]PullPi
 		FailReason   *string `db:"fail_reason"`
 	}
 
-	err := s.db.Select(ctx, &items, `
+	err := s.db.SelectI(ctx, &items, `
 		SELECT piece_cid, piece_raw_size, source_url, failed, fail_reason
 		FROM pdp_piece_pull_items WHERE fetch_id = $1
 	`, pullID)
@@ -813,7 +813,7 @@ func (s *dbPullStore) GetPullPieces(ctx context.Context, pullID int64) ([]PullPi
 }
 
 func (s *dbPullStore) MarkPieceFailed(ctx context.Context, pullID int64, pieceCid string, reason string) error {
-	_, err := s.db.Exec(ctx, `
+	_, err := s.db.ExecI(ctx, `
 		UPDATE pdp_piece_pull_items
 		SET failed = TRUE, fail_reason = $3
 		WHERE fetch_id = $1 AND piece_cid = $2
@@ -831,7 +831,7 @@ func (s *dbPullStore) CheckTaskExhaustedRetries(ctx context.Context, taskID int6
 		Err    *string `db:"err"`    // error message when result is false
 	}
 
-	err := s.db.Select(ctx, &history, `
+	err := s.db.SelectI(ctx, &history, `
 		SELECT result, err FROM harmony_task_history
 		WHERE task_id = $1
 		ORDER BY id DESC

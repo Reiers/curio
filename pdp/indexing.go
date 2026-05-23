@@ -7,7 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/pdp/contract"
 )
@@ -122,7 +122,7 @@ func CheckIfIndexingNeededFromExtraData(extraData []byte) (bool, error) {
 
 // EnableIndexingForPiecesInTx marks the specified piecerefs as needing indexing within a transaction.
 func EnableIndexingForPiecesInTx(
-	tx *harmonydb.Tx,
+	tx harmonyquery.TxInterface,
 	serviceLabel string,
 	subPieceRefIDs []int64,
 ) error {
@@ -130,7 +130,7 @@ func EnableIndexingForPiecesInTx(
 		"serviceLabel", serviceLabel,
 		"subPieceCount", len(subPieceRefIDs))
 
-	_, err := tx.Exec(`
+	_, err := tx.ExecI(`
 		UPDATE pdp_piecerefs
 		SET needs_indexing = TRUE
 		WHERE service = $1

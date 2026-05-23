@@ -22,6 +22,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/pdp/contract"
 )
@@ -90,7 +91,7 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
 	subPieceInfoMap := make(map[string]*SubPieceInfo)
 
 	// Start a DB transaction
-	_, err := p.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (bool, error) {
+	_, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Step 4: Get pdp_piecerefs matching all subPiece cids + make sure those refs belong to serviceLabel
 		rows, err := tx.Query(`
             SELECT ppr.piece_cid, ppr.id AS pdp_pieceref_id, ppr.piece_ref,
@@ -186,7 +187,7 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
 
 		// All validations passed, commit the transaction
 		return true, nil
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to validate subPieces: %w", err)
 	}
@@ -279,7 +280,7 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 	// check if the data set belongs to the service in pdp_data_sets
 	var dataSetService string
 	var unrecoverable *int64
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
 			SELECT service, unrecoverable_proving_failure_epoch
 			FROM pdp_data_sets
 			WHERE id = $1
@@ -410,12 +411,12 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 		"dataSetId", dataSetIdUint64,
 		"pieceCount", len(payload.Pieces))
 
-	comm, err := p.db.BeginTransaction(workCtx, func(txdb *harmonydb.Tx) (bool, error) {
+	comm, err := p.db.BeginTransactionI(workCtx, func(txdb harmonyquery.TxInterface) (bool, error) {
 		// Insert into message_waits_eth
 		log.Debugw("Inserting AddPieces into message_waits_eth",
 			"txHash", txHashLower,
 			"status", "pending")
-		n, err := txdb.Exec(`
+		n, err := txdb.ExecI(`
             INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
             VALUES ($1, $2)
         `, txHashLower, "pending")
@@ -453,7 +454,7 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 
 		// Return true to commit the transaction
 		return true, nil
-	}, harmonydb.OptionRetry())
+	}, harmonyquery.OptionRetry())
 	if err != nil {
 		log.Errorw("Failed to insert into database", "error", err, "txHash", txHashLower, "subPieces", subPieceInfoMap)
 		httpServerError(w, http.StatusInternalServerError, "Internal server error", err)
@@ -471,13 +472,13 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (p *PDPService) insertPieceAdds(txdb *harmonydb.Tx, dataSetId *uint64, txHash string, pieces []AddPieceRequest, subPieceInfoMap map[string]*SubPieceInfo) error {
+func (p *PDPService) insertPieceAdds(txdb harmonyquery.TxInterface, dataSetId *uint64, txHash string, pieces []AddPieceRequest, subPieceInfoMap map[string]*SubPieceInfo) error {
 	for addMessageIndex, addPieceReq := range pieces {
 		for _, subPieceEntry := range addPieceReq.SubPieces {
 			subPieceInfo := subPieceInfoMap[subPieceEntry.subPieceCIDv1]
 
 			// Insert into pdp_data_set_pieces
-			n, err := txdb.Exec(`
+			n, err := txdb.ExecI(`
                     INSERT INTO pdp_data_set_piece_adds (
                         data_set,
                         piece,
