@@ -93,7 +93,10 @@ func upsertFallback(tx harmonyquery.TxInterface, pieceCID string, paddedSize, ra
 	if err == nil {
 		return id, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	// pgx.ErrNoRows on Postgres, database/sql.ErrNoRows on SQLite, or the
+	// stringy message "sql: no rows in result set" — all mean "no
+	// existing row, proceed to insert."
+	if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, sql.ErrNoRows) && err.Error() != "sql: no rows in result set" {
 		return 0, xerrors.Errorf("upsert parked_pieces (fallback select): %w", err)
 	}
 	if skip != nil {
