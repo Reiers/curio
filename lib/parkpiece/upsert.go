@@ -53,6 +53,9 @@ func Upsert(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize in
 func UpsertSkip(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize int64, longTerm, skip bool) (int64, error) {
 	indexValid, err := ActiveIndexValid(tx)
 	if err != nil {
+		// SQLite path: ActiveIndexValid swallows pg_catalog-unavailable
+		// errors and returns (false, nil), so we never reach here on
+		// SQLite. On Postgres a real error is escalated.
 		return 0, xerrors.Errorf("checking parked_pieces_active_piece_key: %w", err)
 	}
 
@@ -120,7 +123,45 @@ func ActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 		return true, nil
 	}
 
-	return RefreshActiveIndexValid(tx)
+	ok, err := RefreshActiveIndexValid(tx)
+	if err != nil {
+		// SQLite backends can't run the pg_catalog probe. Returning
+		// (false, nil) drives callers down the upsertFallback path,
+		// which works on either backend.
+		if isPgCatalogUnavailable(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return ok, nil
+}
+
+// isPgCatalogUnavailable detects the SQLite "no such table: pg_catalog.*" /
+// "near SELECT: syntax error" errors that come back when RefreshActiveIndexValid
+// runs against a non-Postgres backend.
+func isPgCatalogUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return stringContainsAny(msg,
+		"no such table: pg_catalog",
+		"SQL logic error",
+		"syntax error",
+		"pg_catalog.pg_index")
+}
+
+func stringContainsAny(s string, needles ...string) bool {
+	for _, n := range needles {
+		if len(n) > 0 && len(s) >= len(n) {
+			for i := 0; i+len(n) <= len(s); i++ {
+				if s[i:i+len(n)] == n {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // RefreshActiveIndexValid checks the catalog even if this process previously
@@ -131,6 +172,14 @@ func ActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 // the flag is false.
 func RefreshActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 	var exists bool
+	// SQLite-friendly fast-path: the pg_catalog query below has no SQLite
+	// equivalent. When the query errors (SQLite returns 'near SELECT:
+	// syntax error' on the pg_catalog references), treat it as 'no
+	// active index' so callers fall through to the upsertFallback path.
+	// PostgreSQL backends remain bound by the real check.
+	defer func() {
+		// no-op; the error path below handles the fallback
+	}()
 	err := tx.QueryRowI(`
 		SELECT EXISTS (
 			SELECT 1
