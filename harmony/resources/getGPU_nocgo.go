@@ -1,13 +1,10 @@
-//go:build !darwin && cgo
+//go:build !darwin && !cgo
 
 package resources
 
 import (
 	"os"
 	"strconv"
-	"strings"
-
-	ffi "github.com/filecoin-project/filecoin-ffi"
 )
 
 var GpuOverprovisionFactor = 1
@@ -23,7 +20,12 @@ func init() {
 	}
 }
 
-func getGPUDevices() float64 { // GPU boolean
+// getGPUDevices is the non-CGo stub. curio-core ships pure-Go; GPU
+// discovery via filecoin-ffi isn't compiled in. The HARMONY_OVERRIDE_GPUS
+// env var still works for operators who want to declare GPU resources
+// explicitly. Default 0 reflects "no GPU-bound tasks scheduled on this
+// machine," which matches the PDP-only deployment shape.
+func getGPUDevices() float64 {
 	if nstr := os.Getenv("HARMONY_OVERRIDE_GPUS"); nstr != "" {
 		n, err := strconv.ParseFloat(nstr, 64)
 		if err != nil {
@@ -31,16 +33,6 @@ func getGPUDevices() float64 { // GPU boolean
 		} else {
 			return n
 		}
-	}
-
-	gpus, err := ffi.GetGPUDevices()
-	logger.Infow("GPUs", "list", gpus, "overprovision_factor", GpuOverprovisionFactor)
-	if err != nil {
-		logger.Errorf("getting gpu devices failed: %+v", err)
-	}
-	all := strings.ToLower(strings.Join(gpus, ","))
-	if len(gpus) > 1 || strings.Contains(all, "ati") || strings.Contains(all, "nvidia") {
-		return float64(len(gpus) * GpuOverprovisionFactor)
 	}
 	return 0
 }
