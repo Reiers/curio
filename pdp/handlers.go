@@ -21,9 +21,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/yugabyte/pgx/v5"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/alertmanager"
 	"github.com/filecoin-project/curio/api"
-	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/lib/paths"
 	ipni_provider "github.com/filecoin-project/curio/market/ipni/ipni-provider"
@@ -1239,27 +1239,44 @@ func (p *PDPService) handleGetDataSetPiece(w http.ResponseWriter, r *http.Reques
 
 func (p *PDPService) cleanup(ctx context.Context) {
 	rm := func(ctx context.Context, db harmonyquery.DBInterface) {
-		var RefIDs []int64
+		// Portable across Postgres + SQLite:
+		//   * "completed_at <= TIMEZONE('UTC', NOW()) - INTERVAL '60 minutes'" was Postgres-only.
+		//     Use a parameterized cutoff computed in Go instead.
+		//   * COALESCE(array_agg(...), '{}') returning []int64 was also Postgres-only.
+		//     SQLite has no array type, so use a row-scan SELECT and collect ids in Go.
+		cutoff60m := time.Now().UTC().Add(-60 * time.Minute)
 
-		err := db.QueryRowI(ctx, `SELECT COALESCE(array_agg(piece_ref), '{}') AS ref_ids
-												FROM pdp_piece_streaming_uploads
-												WHERE complete = TRUE
-												  AND completed_at <= TIMEZONE('UTC', NOW()) - INTERVAL '60 minutes';`).Scan(&RefIDs)
-		if err != nil {
+		var RefIDs []int64
+		if err := db.SelectI(ctx, &RefIDs, `
+			SELECT piece_ref
+			FROM pdp_piece_streaming_uploads
+			WHERE complete = TRUE
+			  AND completed_at <= $1
+			  AND piece_ref IS NOT NULL`, cutoff60m); err != nil {
 			log.Errorw("failed to get non-finalized uploads", "error", err)
 		}
 
 		if len(RefIDs) > 0 {
-			_, err := db.ExecI(ctx, `DELETE FROM parked_piece_refs WHERE ref_id = ANY($1);`, RefIDs)
-			if err != nil {
+			// ANY($1) is Postgres-only; expand to IN(?,?,...) for portability.
+			// The list is bounded by how many uploads completed in the last hour,
+			// so an expanded IN list is the right shape here.
+			placeholders := make([]string, len(RefIDs))
+			args := make([]interface{}, len(RefIDs))
+			for i, id := range RefIDs {
+				placeholders[i] = fmt.Sprintf("$%d", i+1)
+				args[i] = id
+			}
+			query := "DELETE FROM parked_piece_refs WHERE ref_id IN (" + strings.Join(placeholders, ",") + ")"
+			if _, err := db.ExecI(ctx, query, args...); err != nil {
 				log.Errorw("failed to delete non-finalized uploads", "error", err)
 			}
 		}
 
-		// Clean up old piece pull records (older than 5 days)
-		// CASCADE deletes pdp_piece_pull_items automatically
-		_, err = db.ExecI(ctx, `DELETE FROM pdp_piece_pulls WHERE created_at < NOW() - INTERVAL '5 days'`)
-		if err != nil {
+		// Clean up old piece pull records (older than 5 days).
+		// CASCADE deletes pdp_piece_pull_items automatically on Postgres; SQLite's
+		// schema definition mirrors that with ON DELETE CASCADE where applicable.
+		cutoff5d := time.Now().UTC().AddDate(0, 0, -5)
+		if _, err := db.ExecI(ctx, `DELETE FROM pdp_piece_pulls WHERE created_at < $1`, cutoff5d); err != nil {
 			log.Errorw("failed to delete old piece pull records", "error", err)
 		}
 	}
