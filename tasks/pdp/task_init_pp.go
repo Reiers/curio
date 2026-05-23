@@ -46,6 +46,15 @@ func NewInitProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fi
 		fil:       fil,
 	}
 
+	// curio-core: skip chain-tipset handler registration when running without
+	// a chain scheduler. PDP v1 task registry still picks up TypeDetails() so
+	// the engine can advertise + run this task type; the on-tipset enqueuer
+	// is a Curio-mainnet-only path and not exercised in curio-core single-server.
+	if chainSched == nil {
+		log.Debug("NewInitProvingPeriodTask: chainSched is nil; skipping AddHandler (curio-core single-server)")
+		return ipp
+	}
+
 	_ = chainSched.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		if apply == nil {
 			return nil

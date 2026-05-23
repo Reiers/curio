@@ -74,6 +74,13 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db *harmonydb.DB, ethC
 	// ProveTasks are created on pdp_data_set entries where
 	// challenge_request_msg_hash is not null (=not yet landed)
 
+	// curio-core: skip chain-tipset handler registration when running without
+	// a chain scheduler. See NewInitProvingPeriodTask for context.
+	if chainSched == nil {
+		log.Debug("NewProveTask: chainSched is nil; skipping AddHandler (curio-core single-server)")
+		return pt
+	}
+
 	err := chainSched.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		if apply == nil {
 			return nil

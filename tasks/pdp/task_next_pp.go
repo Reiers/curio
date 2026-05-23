@@ -45,6 +45,13 @@ func NewNextProvingPeriodTask(db *harmonydb.DB, ethClient ethchain.EthClient, fi
 		fil:       fil,
 	}
 
+	// curio-core: skip chain-tipset handler registration when running without
+	// a chain scheduler. See NewInitProvingPeriodTask for context.
+	if chainSched == nil {
+		log.Debug("NewNextProvingPeriodTask: chainSched is nil; skipping AddHandler (curio-core single-server)")
+		return n
+	}
+
 	_ = chainSched.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		if apply == nil {
 			return nil
