@@ -6,7 +6,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 )
 
 // RetrievalV1 defines a structure for managing retrieval settings
@@ -21,7 +21,7 @@ type RetrievalV1 struct {
 	AnnouncePiece bool `json:"announce_piece"`
 }
 
-func (r *RetrievalV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20Config) (DealCode, error) {
+func (r *RetrievalV1) Validate(ctx context.Context, db harmonyquery.DBInterface, cfg *config.MK20Config) (DealCode, error) {
 	code, err := IsProductEnabled(ctx, db, r.ProductName())
 	if err != nil {
 		return code, err

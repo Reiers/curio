@@ -202,7 +202,7 @@ func (p *Provider) insertProvider(priv []byte, peerID string, sp int64) error {
 }
 
 func (p *Provider) refreshProviders(ctx context.Context) error {
-	rows, err := p.db.Query(ctx, `SELECT priv_key, peer_id, sp_id FROM ipni_peerid`)
+	rows, err := p.db.QueryI(ctx, `SELECT priv_key, peer_id, sp_id FROM ipni_peerid`)
 	if err != nil {
 		return xerrors.Errorf("failed to refresh ipni peers from DB: %w", err)
 	}

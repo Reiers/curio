@@ -7,7 +7,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 )
 
 const (
@@ -52,7 +52,7 @@ type PDPV1 struct {
 	ExtraData []byte `json:"extra_data,omitempty"`
 }
 
-func (p *PDPV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20Config) (DealCode, error) {
+func (p *PDPV1) Validate(ctx context.Context, db harmonyquery.DBInterface, cfg *config.MK20Config) (DealCode, error) {
 	code, err := IsProductEnabled(ctx, db, p.ProductName())
 	if err != nil {
 		return code, err
@@ -64,7 +64,7 @@ func (p *PDPV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20
 
 	var existingAddress bool
 
-	err = db.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM eth_keys WHERE role = 'pdp')`).Scan(&existingAddress)
+	err = db.QueryRowI(context.Background(), `SELECT EXISTS(SELECT 1 FROM eth_keys WHERE role = 'pdp')`).Scan(&existingAddress)
 	if err != nil {
 		return ErrServerInternalError, xerrors.Errorf("checking if pdp address exists: %w", err)
 	}
@@ -102,7 +102,7 @@ func (p *PDPV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20
 		}
 		pid := *p.DataSetID
 		var exists bool
-		err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set WHERE id = $1 AND removed = FALSE)`, pid).Scan(&exists)
+		err := db.QueryRowI(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set WHERE id = $1 AND removed = FALSE)`, pid).Scan(&exists)
 		if err != nil {
 			return ErrServerInternalError, xerrors.Errorf("checking if dataset exists: %w", err)
 		}
@@ -120,7 +120,7 @@ func (p *PDPV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20
 		}
 		pid := *p.DataSetID
 		var exists bool
-		err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set WHERE id = $1 AND removed = FALSE)`, pid).Scan(&exists)
+		err := db.QueryRowI(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set WHERE id = $1 AND removed = FALSE)`, pid).Scan(&exists)
 		if err != nil {
 			return ErrServerInternalError, xerrors.Errorf("checking if dataset exists: %w", err)
 		}
@@ -147,7 +147,7 @@ func (p *PDPV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20
 			return ErrBadProposal, xerrors.Errorf("piece_ids must be defined for delete_proof_set")
 		}
 		var exists bool
-		err := db.QueryRow(ctx, `SELECT COUNT(*) = cardinality($2::BIGINT[]) AS all_exist_and_active
+		err := db.QueryRowI(ctx, `SELECT COUNT(*) = cardinality($2::BIGINT[]) AS all_exist_and_active
 										FROM pdp_dataset_piece r
 										JOIN pdp_data_set s ON r.data_set_id = s.id
 										WHERE r.data_set_id = $1

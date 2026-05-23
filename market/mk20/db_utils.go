@@ -8,7 +8,7 @@ import (
 	"github.com/oklog/ulid"
 	"golang.org/x/xerrors"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 )
 
 type DBDDOV1 struct {
@@ -90,7 +90,7 @@ func (d *Deal) ToDBDeal() (*DBDeal, error) {
 	return &ddeal, nil
 }
 
-func (d *Deal) SaveToDB(tx *harmonydb.Tx) error {
+func (d *Deal) SaveToDB(tx harmonyquery.TxInterface) error {
 	dbDeal, err := d.ToDBDeal()
 	if err != nil {
 		return xerrors.Errorf("to db deal: %w", err)
@@ -104,7 +104,7 @@ func (d *Deal) SaveToDB(tx *harmonydb.Tx) error {
 		pieceCid = nil
 	}
 
-	n, err := tx.Exec(`INSERT INTO market_mk20_deal (id, client, piece_cid_v2, data, ddo_v1, retrieval_v1, pdp_v1) 
+	n, err := tx.ExecI(`INSERT INTO market_mk20_deal (id, client, piece_cid_v2, data, ddo_v1, retrieval_v1, pdp_v1) 
                   VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		dbDeal.Identifier,
 		dbDeal.Client,
@@ -122,7 +122,7 @@ func (d *Deal) SaveToDB(tx *harmonydb.Tx) error {
 	return nil
 }
 
-func (d *Deal) UpdateDealWithTx(tx *harmonydb.Tx) error {
+func (d *Deal) UpdateDealWithTx(tx harmonyquery.TxInterface) error {
 	dbDeal, err := d.ToDBDeal()
 	if err != nil {
 		return xerrors.Errorf("to db deal: %w", err)
@@ -136,7 +136,7 @@ func (d *Deal) UpdateDealWithTx(tx *harmonydb.Tx) error {
 		pieceCid = nil
 	}
 
-	n, err := tx.Exec(`UPDATE market_mk20_deal SET 
+	n, err := tx.ExecI(`UPDATE market_mk20_deal SET 
                             piece_cid_v2 = $1, 
                             data = $2, 
                             ddo_v1 = $3,
@@ -152,7 +152,7 @@ func (d *Deal) UpdateDealWithTx(tx *harmonydb.Tx) error {
 	return nil
 }
 
-func (d *Deal) UpdateDeal(tx *harmonydb.Tx) error {
+func (d *Deal) UpdateDeal(tx harmonyquery.TxInterface) error {
 	dbDeal, err := d.ToDBDeal()
 	if err != nil {
 		return xerrors.Errorf("to db deal: %w", err)
@@ -166,7 +166,7 @@ func (d *Deal) UpdateDeal(tx *harmonydb.Tx) error {
 		pieceCid = nil
 	}
 
-	n, err := tx.Exec(`UPDATE market_mk20_deal SET 
+	n, err := tx.ExecI(`UPDATE market_mk20_deal SET 
                             piece_cid_v2 = $1, 
                             data = $2, 
                             ddo_v1 = $3,
@@ -182,9 +182,9 @@ func (d *Deal) UpdateDeal(tx *harmonydb.Tx) error {
 	return nil
 }
 
-func DealFromTX(tx *harmonydb.Tx, id ulid.ULID) (*Deal, error) {
+func DealFromTX(tx harmonyquery.TxInterface, id ulid.ULID) (*Deal, error) {
 	var dbDeal []DBDeal
-	err := tx.Select(&dbDeal, `SELECT 
+	err := tx.SelectI(&dbDeal, `SELECT 
     								id,
 									client,
 									data, 
@@ -200,9 +200,9 @@ func DealFromTX(tx *harmonydb.Tx, id ulid.ULID) (*Deal, error) {
 	return dbDeal[0].ToDeal()
 }
 
-func DealFromDB(ctx context.Context, db *harmonydb.DB, id ulid.ULID) (*Deal, error) {
+func DealFromDB(ctx context.Context, db harmonyquery.DBInterface, id ulid.ULID) (*Deal, error) {
 	var dbDeal []DBDeal
-	err := db.Select(ctx, &dbDeal, `SELECT 
+	err := db.SelectI(ctx, &dbDeal, `SELECT 
 										id,
 										client,
 										data, 

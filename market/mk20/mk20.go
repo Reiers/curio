@@ -26,6 +26,7 @@ import (
 
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/lib/ffi"
@@ -52,7 +53,7 @@ type MK20API interface {
 
 type MK20 struct {
 	miners             *config.Dynamic[[]address.Address]
-	DB                 *harmonydb.DB
+	DB                 harmonyquery.DBInterface
 	api                MK20API
 	ethClient          ethchain.EthClient
 	si                 paths.SectorIndex
@@ -71,7 +72,7 @@ type MK20 struct {
 
 func NewMK20Handler(
 	miners *config.Dynamic[[]address.Address],
-	db *harmonydb.DB,
+	db harmonyquery.DBInterface,
 	si paths.SectorIndex,
 	mapi MK20API,
 	ethClient ethchain.EthClient,
@@ -186,7 +187,7 @@ func (m *MK20) ExecuteDeal(ctx context.Context, deal *Deal, auth string) (result
 			return rejection
 		}
 
-		comm, err := m.DB.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			err = deal.SaveToDB(tx)
 			if err != nil {
 				return false, err
@@ -232,17 +233,17 @@ func (m *MK20) ExecuteDeal(ctx context.Context, deal *Deal, auth string) (result
 	}
 }
 
-func (m *MK20) processDDODeal(deal *Deal, tx *harmonydb.Tx) error {
+func (m *MK20) processDDODeal(deal *Deal, tx harmonyquery.TxInterface) error {
 	// Assume upload if no data source defined
 	var err error
 	if deal.Data == nil {
-		_, err = tx.Exec(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
+		_, err = tx.ExecI(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
 	} else {
 		if deal.Data.SourceHttpPut != nil {
-			_, err = tx.Exec(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
+			_, err = tx.ExecI(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
 		} else {
 			// All deals which are not upload should be entered in market_mk20_pipeline_waiting for further processing.
-			_, err = tx.Exec(`INSERT INTO market_mk20_pipeline_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
+			_, err = tx.ExecI(`INSERT INTO market_mk20_pipeline_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
 		}
 	}
 
@@ -581,7 +582,7 @@ func (m *MK20) processPDPDeal(ctx context.Context, deal *Deal) (result *Provider
 	}
 
 	// Save deal to DB and start pipeline if required
-	comm, err := m.DB.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Save deal
 		err = deal.SaveToDB(tx)
 		if err != nil {
@@ -600,14 +601,14 @@ func (m *MK20) processPDPDeal(ctx context.Context, deal *Deal) (result *Provider
 					}
 				}
 				if deal.Data.SourceHttpPut != nil {
-					_, err = tx.Exec(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
+					_, err = tx.ExecI(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
 					if err != nil {
 						return false, xerrors.Errorf("inserting upload waiting: %w", err)
 					}
 				}
 			} else {
 				// Assume upload
-				_, err = tx.Exec(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
+				_, err = tx.ExecI(`INSERT INTO market_mk20_upload_waiting (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, deal.Identifier.String())
 				if err != nil {
 					return false, xerrors.Errorf("inserting upload waiting: %w", err)
 				}
@@ -615,7 +616,7 @@ func (m *MK20) processPDPDeal(ctx context.Context, deal *Deal) (result *Provider
 		}
 
 		if pdp.CreateDataSet {
-			n, err := tx.Exec(`INSERT INTO pdp_data_set_create (id, client, record_keeper, extra_data) VALUES ($1, $2, $3, $4)`,
+			n, err := tx.ExecI(`INSERT INTO pdp_data_set_create (id, client, record_keeper, extra_data) VALUES ($1, $2, $3, $4)`,
 				deal.Identifier.String(), deal.Client, pdp.RecordKeeper, pdp.ExtraData)
 			if err != nil {
 				return false, xerrors.Errorf("inserting PDP proof set create: %w", err)
@@ -626,7 +627,7 @@ func (m *MK20) processPDPDeal(ctx context.Context, deal *Deal) (result *Provider
 		}
 
 		if pdp.DeleteDataSet {
-			n, err := tx.Exec(`INSERT INTO pdp_data_set_delete (id, client, set_id, extra_data) VALUES ($1, $2, $3, $4)`,
+			n, err := tx.ExecI(`INSERT INTO pdp_data_set_delete (id, client, set_id, extra_data) VALUES ($1, $2, $3, $4)`,
 				deal.Identifier.String(), deal.Client, *pdp.DataSetID, pdp.ExtraData)
 			if err != nil {
 				return false, xerrors.Errorf("inserting PDP proof set delete: %w", err)
@@ -637,7 +638,7 @@ func (m *MK20) processPDPDeal(ctx context.Context, deal *Deal) (result *Provider
 		}
 
 		if pdp.DeletePiece {
-			n, err := tx.Exec(`INSERT INTO pdp_piece_delete (id, client, set_id, pieces, extra_data) VALUES ($1, $2, $3, $4, $5)`,
+			n, err := tx.ExecI(`INSERT INTO pdp_piece_delete (id, client, set_id, pieces, extra_data) VALUES ($1, $2, $3, $4, $5)`,
 				deal.Identifier.String(), deal.Client, *pdp.DataSetID, pdp.PieceIDs, pdp.ExtraData)
 			if err != nil {
 				return false, xerrors.Errorf("inserting PDP delete root: %w", err)
@@ -746,7 +747,7 @@ func (m *MK20) sanitizePDPDeal(ctx context.Context, deal *Deal) (*ProviderDealRe
 	return nil, nil
 }
 
-func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error {
+func insertPDPPipeline(ctx context.Context, tx harmonyquery.TxInterface, deal *Deal) error {
 	pdp := deal.Products.PDPV1
 	retv := deal.Products.RetrievalV1
 	data := deal.Data
@@ -765,7 +766,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 	if data.SourceHTTP != nil {
 		var pieceID int64
 		// Attempt to select the piece ID first
-		err = tx.QueryRow(`SELECT id FROM parked_pieces WHERE piece_cid = $1 AND piece_padded_size = $2`, pi.PieceCIDV1.String(), pi.Size).Scan(&pieceID)
+		err = tx.QueryRowI(`SELECT id FROM parked_pieces WHERE piece_cid = $1 AND piece_padded_size = $2`, pi.PieceCIDV1.String(), pi.Size).Scan(&pieceID)
 
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -794,7 +795,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 				headers = []byte("{}")
 			}
 
-			err = tx.QueryRow(`INSERT INTO parked_piece_refs (piece_id, data_url, data_headers, long_term)
+			err = tx.QueryRowI(`INSERT INTO parked_piece_refs (piece_id, data_url, data_headers, long_term)
         			VALUES ($1, $2, $3, TRUE) RETURNING ref_id`, pieceID, src.URL, headers).Scan(&refID)
 			if err != nil {
 				return xerrors.Errorf("inserting parked piece ref: %w", err)
@@ -802,7 +803,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 			refIds = append(refIds, refID)
 		}
 
-		n, err := tx.Exec(`INSERT INTO market_mk20_download_pipeline (id, piece_cid_v2, product, ref_ids) VALUES ($1, $2, $3, $4)`,
+		n, err := tx.ExecI(`INSERT INTO market_mk20_download_pipeline (id, piece_cid_v2, product, ref_ids) VALUES ($1, $2, $3, $4)`,
 			dealID, deal.Data.PieceCID.String(), ProductNamePDPV1, refIds)
 		if err != nil {
 			return xerrors.Errorf("inserting PDP download pipeline: %w", err)
@@ -811,7 +812,7 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 			return xerrors.Errorf("inserting PDP download pipeline: %d rows affected", n)
 		}
 
-		n, err = tx.Exec(`INSERT INTO pdp_pipeline (
+		n, err = tx.ExecI(`INSERT INTO pdp_pipeline (
             id, client, piece_cid_v2, data_set_id, extra_data, deal_aggregation, indexing, announce, announce_payload) 
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 			dealID, deal.Client, data.PieceCID.String(), *pdp.DataSetID,
@@ -913,10 +914,10 @@ func insertPDPPipeline(ctx context.Context, tx *harmonydb.Tx, deal *Deal) error 
 	return xerrors.Errorf("unknown data source type")
 }
 
-func markDownloaded(ctx context.Context, db *harmonydb.DB) {
-	md := func(ctx context.Context, db *harmonydb.DB) {
+func markDownloaded(ctx context.Context, db harmonyquery.DBInterface) {
+	md := func(ctx context.Context, db harmonyquery.DBInterface) {
 		var n int
-		err := db.QueryRow(ctx, `SELECT mk20_pdp_mark_downloaded($1)`, ProductNamePDPV1).Scan(&n)
+		err := db.QueryRowI(ctx, `SELECT mk20_pdp_mark_downloaded($1)`, ProductNamePDPV1).Scan(&n)
 		if err != nil {
 			log.Errorf("failed to mark PDP downloaded piece: %v", err)
 			return
@@ -1002,7 +1003,7 @@ func (m *MK20) UpdateDeal(ctx context.Context, id ulid.ULID, deal *Deal, auth st
 		}
 	}
 
-	comm, err := m.DB.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Save the updated deal to DB
 		err = nd.UpdateDeal(tx)
 		if err != nil {

@@ -19,7 +19,7 @@ import (
 	"github.com/filecoin-project/go-state-types/builtin/v16/verifreg"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	mk20contract "github.com/filecoin-project/curio/market/mk20/contract"
 )
@@ -56,7 +56,7 @@ type DDOV1 struct {
 	NotificationPayload []byte `json:"notification_payload,omitempty"`
 }
 
-func (d *DDOV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20Config) (DealCode, error) {
+func (d *DDOV1) Validate(ctx context.Context, db harmonyquery.DBInterface, cfg *config.MK20Config) (DealCode, error) {
 	code, err := IsProductEnabled(ctx, db, d.ProductName())
 	if err != nil {
 		return code, err
@@ -122,7 +122,7 @@ func (d *DDOV1) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20
 	return Ok, nil
 }
 
-func (d *DDOV1) VerifyMarketDeal(ctx context.Context, db *harmonydb.DB, eth ethchain.EthClient, deal *Deal) (DealCode, error) {
+func (d *DDOV1) VerifyMarketDeal(ctx context.Context, db harmonyquery.DBInterface, eth ethchain.EthClient, deal *Deal) (DealCode, error) {
 	if d.MarketAddress == "" {
 		return Ok, nil
 	}
@@ -140,7 +140,7 @@ func (d *DDOV1) VerifyMarketDeal(ctx context.Context, db *harmonydb.DB, eth ethc
 	}
 
 	var allowed bool
-	err := db.QueryRow(ctx, `SELECT allowed FROM ddo_contracts WHERE address = $1`, d.MarketAddress).Scan(&allowed)
+	err := db.QueryRowI(ctx, `SELECT allowed FROM ddo_contracts WHERE address = $1`, d.MarketAddress).Scan(&allowed)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrBadProposal, ErrUnknownContract

@@ -8,7 +8,7 @@ import (
 	"github.com/oklog/ulid"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 )
 
 // Deal represents a structure defining the details and components of a specific deal in the system.
@@ -207,7 +207,7 @@ const (
 )
 
 type product interface {
-	Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20Config) (DealCode, error)
+	Validate(ctx context.Context, db harmonyquery.DBInterface, cfg *config.MK20Config) (DealCode, error)
 	ProductName() ProductName
 }
 

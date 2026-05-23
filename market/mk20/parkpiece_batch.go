@@ -6,7 +6,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/parkpiece"
 )
 
@@ -35,7 +35,7 @@ type ParkedPieceDownloadRef struct {
 // ref_id to market_mk20_download_pipeline. This deliberately avoids bulk ref
 // insertion plus post-hoc ref_id remapping because (piece_id, data_url) is not
 // a unique identity for a ref when duplicate URLs or headers are present.
-func InsertParkedPieceDownloadRefsBatch(ctx context.Context, tx *harmonydb.Tx, product ProductName, refs []ParkedPieceDownloadRef) error {
+func InsertParkedPieceDownloadRefsBatch(ctx context.Context, tx harmonyquery.TxInterface, product ProductName, refs []ParkedPieceDownloadRef) error {
 	if len(refs) == 0 {
 		return nil
 	}

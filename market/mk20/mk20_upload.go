@@ -24,6 +24,7 @@ import (
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/parkpiece"
 	"github.com/filecoin-project/curio/lib/storiface"
@@ -196,7 +197,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 	numChunks := int(math.Ceil(float64(upload.RawSize) / float64(chunkSize)))
 
 	// Create rows in market_mk20_deal_chunk for each chunk for the ID
-	comm, err := m.DB.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		batch := &pgx.Batch{}
 		batchSize := 15000
 		for i := 1; i <= numChunks; i++ {
@@ -231,7 +232,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 				return false, xerrors.Errorf("closing insert chunk batch: %w", err)
 			}
 		}
-		n, err := tx.Exec(`UPDATE market_mk20_upload_waiting SET chunked = TRUE WHERE id = $1`, id.String())
+		n, err := tx.ExecI(`UPDATE market_mk20_upload_waiting SET chunked = TRUE WHERE id = $1`, id.String())
 		if err != nil {
 			return false, xerrors.Errorf("updating chunked flag: %w", err)
 		}
@@ -348,8 +349,8 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 	var pnum, refID int64
 
 	// Generate piece park details with tmp pieceCID and Size
-	comm, err := m.DB.BeginTransaction(context.Background(), func(tx *harmonydb.Tx) (commit bool, err error) {
-		err = tx.QueryRow(`SELECT id FROM parked_pieces 
+	comm, err := m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		err = tx.QueryRowI(`SELECT id FROM parked_pieces 
           					WHERE piece_cid = $1 
           					  AND piece_padded_size = $2 
           					  AND piece_raw_size = $3`, tpcid.String(), tsize, n).Scan(&pnum)
@@ -366,7 +367,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 		}
 
 		// Add parked_piece_ref
-		err = tx.QueryRow(`INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
+		err = tx.QueryRowI(`INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
         			VALUES ($1, $2, FALSE) RETURNING ref_id`, pnum, "/PUT").Scan(&refID)
 		if err != nil {
 			return false, xerrors.Errorf("inserting parked piece ref: %w", err)
@@ -410,8 +411,8 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 	log.Debugw("piece stored", "deal", id, "chunk", chunk)
 
 	// Update piece park details with correct values
-	comm, err = m.DB.BeginTransaction(context.Background(), func(tx *harmonydb.Tx) (commit bool, err error) {
-		n, err := tx.Exec(`UPDATE parked_pieces SET 
+	comm, err = m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		n, err := tx.ExecI(`UPDATE parked_pieces SET 
                          piece_cid = $1, 
                          piece_padded_size = $2, 
                          piece_raw_size = $3, 
@@ -425,7 +426,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 			return false, xerrors.Errorf("updating parked piece: expected 1 row updated, got %d", n)
 		}
 
-		n, err = tx.Exec(`UPDATE market_mk20_deal_chunk SET 
+		n, err = tx.ExecI(`UPDATE market_mk20_deal_chunk SET 
                                   complete = TRUE,
                                   completed_at = NOW() AT TIME ZONE 'UTC',
                                   ref_id = $1 
@@ -586,9 +587,9 @@ func (m *MK20) HandleUploadFinalize(ctx context.Context, id ulid.ULID, deal *Dea
 		}
 	}
 
-	comm, err := m.DB.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Now update the upload status to trigger the correct pipeline
-		n, err := tx.Exec(`UPDATE market_mk20_deal_chunk SET finalize = TRUE where id = $1`, id.String())
+		n, err := tx.ExecI(`UPDATE market_mk20_deal_chunk SET finalize = TRUE where id = $1`, id.String())
 		if err != nil {
 			log.Errorw("failed to finalize deal upload", "deal", id, "error", err)
 			http.Error(w, "", int(ErrServerInternalError))
@@ -599,7 +600,7 @@ func (m *MK20) HandleUploadFinalize(ctx context.Context, id ulid.ULID, deal *Dea
 			return false, xerrors.Errorf("expected to update %d rows, got 0", n)
 		}
 
-		_, err = tx.Exec(`DELETE FROM market_mk20_upload_waiting WHERE id = $1`, id.String())
+		_, err = tx.ExecI(`DELETE FROM market_mk20_upload_waiting WHERE id = $1`, id.String())
 		if err != nil {
 			return false, xerrors.Errorf("failed to delete upload waiting: %w", err)
 		}
@@ -749,8 +750,8 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 	pieceExists := true
 
 	// Generate piece park details with tmp pieceCID and Size
-	comm, err := m.DB.BeginTransaction(context.Background(), func(tx *harmonydb.Tx) (commit bool, err error) {
-		err = tx.QueryRow(`SELECT id FROM parked_pieces 
+	comm, err := m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		err = tx.QueryRowI(`SELECT id FROM parked_pieces 
           					WHERE piece_cid = $1 
           					  AND piece_padded_size = $2 
           					  AND piece_raw_size = $3
@@ -769,14 +770,14 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 		}
 
 		// Add parked_piece_ref
-		err = tx.QueryRow(`INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
+		err = tx.QueryRowI(`INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
         			VALUES ($1, $2, TRUE) RETURNING ref_id`, pnum, "/PUT").Scan(&refID)
 		if err != nil {
 			return false, xerrors.Errorf("inserting parked piece ref: %w", err)
 		}
 
 		// Mark upload as started to prevent someone else from using chunk upload
-		n, err := tx.Exec(`UPDATE market_mk20_upload_waiting SET chunked = FALSE, ref_id = $2 WHERE id = $1 AND chunked IS NULL AND ref_id IS NULL`, id.String(), refID)
+		n, err := tx.ExecI(`UPDATE market_mk20_upload_waiting SET chunked = FALSE, ref_id = $2 WHERE id = $1 AND chunked IS NULL AND ref_id IS NULL`, id.String(), refID)
 		if err != nil {
 			return false, xerrors.Errorf("updating upload waiting: %w", err)
 		}
@@ -854,9 +855,9 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 	log.Debugw("piece stored", "deal", id)
 
 	// Update piece park details with correct values
-	comm, err = m.DB.BeginTransaction(context.Background(), func(tx *harmonydb.Tx) (commit bool, err error) {
+	comm, err = m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		if havePInfo {
-			n, err := tx.Exec(`UPDATE parked_pieces SET complete = true WHERE id = $1`, pnum)
+			n, err := tx.ExecI(`UPDATE parked_pieces SET complete = true WHERE id = $1`, pnum)
 			if err != nil {
 				return false, xerrors.Errorf("updating parked piece: %w", err)
 			}
@@ -867,7 +868,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 			var pid int64
 			var complete bool
 			// Check if we already have the piece, if found then verify access and skip rest of the processing
-			err = tx.QueryRow(`SELECT id, complete FROM parked_pieces WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = TRUE`, pi.PieceCID.String(), pi.Size).Scan(&pid, &complete)
+			err = tx.QueryRowI(`SELECT id, complete FROM parked_pieces WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = TRUE`, pi.PieceCID.String(), pi.Size).Scan(&pid, &complete)
 			if err == nil {
 				if complete {
 					// If piece exists then check if we can access the data
@@ -881,19 +882,19 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 
 						// If piece does not exist then we update piece park table to work with new tmpID
 						// Update ref table's reference to tmp id
-						_, err = tx.Exec(`UPDATE parked_piece_refs SET piece_id = $1 WHERE piece_id = $2`, pnum, pid)
+						_, err = tx.ExecI(`UPDATE parked_piece_refs SET piece_id = $1 WHERE piece_id = $2`, pnum, pid)
 						if err != nil {
 							return false, xerrors.Errorf("updating parked piece ref: %w", err)
 						}
 
 						// Now delete the original piece which has 404 error
-						_, err = tx.Exec(`DELETE FROM parked_pieces WHERE id = $1`, pid)
+						_, err = tx.ExecI(`DELETE FROM parked_pieces WHERE id = $1`, pid)
 						if err != nil {
 							return false, xerrors.Errorf("deleting parked piece: %w", err)
 						}
 
 						// Update the tmp entry with correct details
-						n, err := tx.Exec(`UPDATE parked_pieces SET 
+						n, err := tx.ExecI(`UPDATE parked_pieces SET 
 													 piece_cid = $1, 
 													 piece_padded_size = $2, 
 													 piece_raw_size = $3, 
@@ -912,14 +913,14 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 						}()
 						// Add parked_piece_ref if no errors
 						var newRefID int64
-						err = tx.QueryRow(`INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
+						err = tx.QueryRowI(`INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
         										VALUES ($1, $2, FALSE) RETURNING ref_id`, pid, "/PUT").Scan(&newRefID)
 						if err != nil {
 							return false, xerrors.Errorf("inserting parked piece ref: %w", err)
 						}
 
 						// Remove the tmp refs. This will also delete the new tmp parked_pieces entry
-						_, err = tx.Exec(`DELETE FROM parked_piece_refs WHERE ref_id = $1`, refID)
+						_, err = tx.ExecI(`DELETE FROM parked_piece_refs WHERE ref_id = $1`, refID)
 						if err != nil {
 							return false, xerrors.Errorf("deleting tmp parked piece ref: %w", err)
 						}
@@ -927,7 +928,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 						refID = newRefID
 					}
 				} else {
-					n, err := tx.Exec(`UPDATE parked_pieces SET complete = true WHERE id = $1`, pid)
+					n, err := tx.ExecI(`UPDATE parked_pieces SET complete = true WHERE id = $1`, pid)
 					if err != nil {
 						return false, xerrors.Errorf("updating parked piece: %w", err)
 					}
@@ -940,7 +941,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 					return false, fmt.Errorf("failed to check if piece already exists: %w", err)
 				}
 				// If piece does not exist then let's update the tmp one
-				n, err := tx.Exec(`UPDATE parked_pieces SET 
+				n, err := tx.ExecI(`UPDATE parked_pieces SET 
                          piece_cid = $1, 
                          piece_padded_size = $2, 
                          piece_raw_size = $3, 
@@ -956,7 +957,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 			}
 		}
 
-		n, err := tx.Exec(`UPDATE market_mk20_upload_waiting SET chunked = FALSE, ref_id = $2 WHERE id = $1`, id.String(), refID)
+		n, err := tx.ExecI(`UPDATE market_mk20_upload_waiting SET chunked = FALSE, ref_id = $2 WHERE id = $1`, id.String(), refID)
 		if err != nil {
 			return false, xerrors.Errorf("updating upload waiting: %w", err)
 		}
@@ -1134,8 +1135,8 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 		}
 	}
 
-	comm, err := m.DB.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
-		_, err = tx.Exec(`DELETE FROM market_mk20_upload_waiting WHERE id = $1`, id.String())
+	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		_, err = tx.ExecI(`DELETE FROM market_mk20_upload_waiting WHERE id = $1`, id.String())
 		if err != nil {
 			return false, xerrors.Errorf("failed to delete upload waiting: %w", err)
 		}
@@ -1177,7 +1178,7 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 				allocationID = nil
 			}
 
-			n, err := tx.Exec(`INSERT INTO market_mk20_pipeline (
+			n, err := tx.ExecI(`INSERT INTO market_mk20_pipeline (
 						   id, sp_id, contract, client, piece_cid_v2, piece_cid,
 						   piece_size, raw_size, url, offline, indexing, announce,
 						   allocation_id, duration, piece_aggregation, deal_aggregation, started, downloaded, after_commp)
@@ -1202,7 +1203,7 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 			pdp := uDeal.Products.PDPV1
 			// Insert the PDP pipeline
 			if refUsed {
-				err = tx.QueryRow(`
+				err = tx.QueryRowI(`
 							INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
 							VALUES ($1, $2, TRUE) RETURNING ref_id
 						`, pid, "/PUT").Scan(&refID)
@@ -1211,7 +1212,7 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 				}
 			}
 
-			n, err := tx.Exec(`INSERT INTO pdp_pipeline (
+			n, err := tx.ExecI(`INSERT INTO pdp_pipeline (
 						id, client, piece_cid_v2, data_set_id, 
 						extra_data, piece_ref, downloaded, deal_aggregation, aggr_index, indexing, announce, announce_payload, after_commp) 
 					 VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, 0, $8, $9, $10, TRUE)`,
@@ -1248,8 +1249,8 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 	w.WriteHeader(int(Ok))
 }
 
-func removeNotFinalizedUploads(ctx context.Context, db *harmonydb.DB) {
-	rm := func(ctx context.Context, db *harmonydb.DB) {
+func removeNotFinalizedUploads(ctx context.Context, db harmonyquery.DBInterface) {
+	rm := func(ctx context.Context, db harmonyquery.DBInterface) {
 		var deals []struct {
 			ID      string        `db:"id"`
 			Chunked bool          `db:"chunked"`
@@ -1257,7 +1258,7 @@ func removeNotFinalizedUploads(ctx context.Context, db *harmonydb.DB) {
 			ReadyAt time.Time     `db:"ready_at"`
 		}
 
-		err := db.Select(ctx, &deals, `SELECT id, chunked, ref_id, ready_at
+		err := db.SelectI(ctx, &deals, `SELECT id, chunked, ref_id, ready_at
 											FROM market_mk20_upload_waiting
 											WHERE chunked IS NOT NULL
 											  AND ready_at <= NOW() AT TIME ZONE 'UTC' - INTERVAL '60 minutes';`)
@@ -1267,8 +1268,8 @@ func removeNotFinalizedUploads(ctx context.Context, db *harmonydb.DB) {
 
 		for _, deal := range deals {
 			if deal.Chunked {
-				comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
-					_, err = tx.Exec(`DELETE FROM parked_piece_refs p
+				comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+					_, err = tx.ExecI(`DELETE FROM parked_piece_refs p
 											USING (
 											  SELECT DISTINCT ref_id
 											  FROM market_mk20_deal_chunk
@@ -1280,12 +1281,12 @@ func removeNotFinalizedUploads(ctx context.Context, db *harmonydb.DB) {
 						return false, xerrors.Errorf("deleting piece refs: %w", err)
 					}
 
-					_, err = tx.Exec(`DELETE FROM market_mk20_deal_chunk WHERE id = $1`, deal.ID)
+					_, err = tx.ExecI(`DELETE FROM market_mk20_deal_chunk WHERE id = $1`, deal.ID)
 					if err != nil {
 						return false, xerrors.Errorf("deleting deal chunks: %w", err)
 					}
 
-					n, err := tx.Exec(`UPDATE market_mk20_upload_waiting
+					n, err := tx.ExecI(`UPDATE market_mk20_upload_waiting
 											SET chunked = NULL,
 												ref_id  = NULL,
 												ready_at = NULL
@@ -1308,13 +1309,13 @@ func removeNotFinalizedUploads(ctx context.Context, db *harmonydb.DB) {
 				}
 			} else {
 				if deal.RefID.Valid {
-					comm, err := db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
-						_, err = tx.Exec(`DELETE FROM parked_piece_refs WHERE ref_id = $1`, deal.RefID.Int64)
+					comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+						_, err = tx.ExecI(`DELETE FROM parked_piece_refs WHERE ref_id = $1`, deal.RefID.Int64)
 						if err != nil {
 							return false, xerrors.Errorf("deleting piece refs: %w", err)
 						}
 
-						n, err := tx.Exec(`UPDATE market_mk20_upload_waiting
+						n, err := tx.ExecI(`UPDATE market_mk20_upload_waiting
 											SET chunked = NULL,
 												ref_id  = NULL,
 												ready_at = NULL

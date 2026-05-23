@@ -21,7 +21,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/robusthttp"
 )
 
@@ -31,7 +31,7 @@ const (
 	maxHeaderCount     = 10
 )
 
-func (d *Deal) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20Config, Auth string) (code DealCode, err error) {
+func (d *Deal) Validate(ctx context.Context, db harmonyquery.DBInterface, cfg *config.MK20Config, Auth string) (code DealCode, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			trace := make([]byte, 1<<16)
@@ -87,7 +87,7 @@ func validateClient(client string, auth string) error {
 	}
 }
 
-func (d *DataSource) Validate(ctx context.Context, db *harmonydb.DB) (DealCode, error) {
+func (d *DataSource) Validate(ctx context.Context, db harmonyquery.DBInterface) (DealCode, error) {
 
 	err := ValidatePieceCID(d.PieceCID)
 	if err != nil {
@@ -389,7 +389,7 @@ func GetPieceInfo(c cid.Cid) (*PieceInfo, error) {
 	}, nil
 }
 
-func (d *Products) Validate(ctx context.Context, db *harmonydb.DB, cfg *config.MK20Config) (DealCode, error) {
+func (d *Products) Validate(ctx context.Context, db harmonyquery.DBInterface, cfg *config.MK20Config) (DealCode, error) {
 	if d == nil {
 		return ErrBadProposal, xerrors.Errorf("products must be defined")
 	}
@@ -520,10 +520,10 @@ func (dsh *DataSourceHttpPut) Name() DataSourceName {
 	return DataSourceNamePut
 }
 
-func IsDataSourceEnabled(ctx context.Context, db *harmonydb.DB, name DataSourceName) (DealCode, error) {
+func IsDataSourceEnabled(ctx context.Context, db harmonyquery.DBInterface, name DataSourceName) (DealCode, error) {
 	var enabled bool
 
-	err := db.QueryRow(ctx, `SELECT enabled FROM market_mk20_data_source WHERE name = $1`, name).Scan(&enabled)
+	err := db.QueryRowI(ctx, `SELECT enabled FROM market_mk20_data_source WHERE name = $1`, name).Scan(&enabled)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return http.StatusInternalServerError, xerrors.Errorf("failed to query data source %s: %w", name, err)
@@ -536,10 +536,10 @@ func IsDataSourceEnabled(ctx context.Context, db *harmonydb.DB, name DataSourceN
 	return Ok, nil
 }
 
-func IsProductEnabled(ctx context.Context, db *harmonydb.DB, name ProductName) (DealCode, error) {
+func IsProductEnabled(ctx context.Context, db harmonyquery.DBInterface, name ProductName) (DealCode, error) {
 	var enabled bool
 
-	err := db.QueryRow(ctx, `SELECT enabled FROM market_mk20_products WHERE name = $1`, name).Scan(&enabled)
+	err := db.QueryRowI(ctx, `SELECT enabled FROM market_mk20_products WHERE name = $1`, name).Scan(&enabled)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return http.StatusInternalServerError, xerrors.Errorf("failed to query product %s: %w", name, err)
@@ -593,7 +593,7 @@ type UploadStatus struct {
 	MissingChunks []int `json:"missing_chunks"`
 }
 
-func UpdateDealDetails(ctx context.Context, db *harmonydb.DB, id ulid.ULID, deal *Deal, cfg *config.MK20Config, auth string) (*Deal, DealCode, []ProductName, error) {
+func UpdateDealDetails(ctx context.Context, db harmonyquery.DBInterface, id ulid.ULID, deal *Deal, cfg *config.MK20Config, auth string) (*Deal, DealCode, []ProductName, error) {
 	ddeal, err := DealFromDB(ctx, db, id)
 	if err != nil {
 		return nil, ErrServerInternalError, nil, xerrors.Errorf("getting deal from DB: %w", err)
