@@ -546,7 +546,7 @@ func (p *PDPService) handleStreamingUpload(w http.ResponseWriter, r *http.Reques
 
 		// 3. Update the pdp_piece_streaming_uploads entry
 		_, err = tx.ExecI(`
-            UPDATE pdp_piece_streaming_uploads SET piece_ref = $1, piece_cid = $2, piece_size = $3, raw_size = $4, complete = TRUE, completed_at = NOW() AT TIME ZONE 'UTC' WHERE id = $5 and service = $6
+            UPDATE pdp_piece_streaming_uploads SET piece_ref = $1, piece_cid = $2, piece_size = $3, raw_size = $4, complete = TRUE, completed_at = CURRENT_TIMESTAMP WHERE id = $5 and service = $6
         `, pieceRefID, pcid.String(), paddedPieceSize, readSize, uploadUUID.String(), serviceID)
 		if err != nil {
 			return false, fmt.Errorf("failed to update pdp_piece_streaming_uploads: %w", err)
