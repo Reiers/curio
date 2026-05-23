@@ -1246,14 +1246,22 @@ func (p *PDPService) cleanup(ctx context.Context) {
 		//     SQLite has no array type, so use a row-scan SELECT and collect ids in Go.
 		cutoff60m := time.Now().UTC().Add(-60 * time.Minute)
 
-		var RefIDs []int64
-		if err := db.SelectI(ctx, &RefIDs, `
+		// dbscan requires struct elements even for one-column selects, so we
+		// scan into a tiny struct slice and project to []int64.
+		var rows []struct {
+			PieceRef int64 `db:"piece_ref"`
+		}
+		if err := db.SelectI(ctx, &rows, `
 			SELECT piece_ref
 			FROM pdp_piece_streaming_uploads
 			WHERE complete = TRUE
 			  AND completed_at <= $1
 			  AND piece_ref IS NOT NULL`, cutoff60m); err != nil {
 			log.Errorw("failed to get non-finalized uploads", "error", err)
+		}
+		RefIDs := make([]int64, len(rows))
+		for i, r := range rows {
+			RefIDs[i] = r.PieceRef
 		}
 
 		if len(RefIDs) > 0 {
