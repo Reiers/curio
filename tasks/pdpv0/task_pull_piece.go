@@ -91,7 +91,7 @@ func (t *PDPPullPieceTask) pollPullItems(ctx context.Context) {
 
 	for {
 		// Mark expired items as permanently failed before looking for new work.
-		n, err := t.db.Exec(ctx, `
+		n, err := t.db.ExecI(ctx, `
 			UPDATE pdp_piece_pull_items fi
 			SET failed = TRUE, fail_reason = 'pull budget exceeded'
 			FROM pdp_piece_pulls pp
@@ -117,7 +117,7 @@ func (t *PDPPullPieceTask) pollPullItems(ctx context.Context) {
 		// 2. Have not permanently failed
 		// 3. Do NOT already have a parked_pieces entry (pull already completed)
 		// 4. Pull request is within the total time budget
-		err = t.db.Select(ctx, &items, `
+		err = t.db.SelectI(ctx, &items, `
 			SELECT fi.fetch_id, fi.piece_cid, fi.piece_raw_size, fi.source_url
 			FROM pdp_piece_pull_items fi
 			JOIN pdp_piece_pulls pp ON pp.id = fi.fetch_id
@@ -157,7 +157,7 @@ func (t *PDPPullPieceTask) pollPullItems(ctx context.Context) {
 			t.TF.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 				// Atomically assign task_id, with same checks as the SELECT query
 				// to prevent race with concurrent parked_pieces creation
-				n, err := tx.Exec(`
+				n, err := tx.ExecI(`
 					UPDATE pdp_piece_pull_items fi
 					SET task_id = $1
 					FROM pdp_piece_pulls pp
@@ -200,7 +200,7 @@ type pullItemData struct {
 func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 	// Fetch task data
 	var items []pullItemData
-	err = t.db.Select(ctx, &items, `
+	err = t.db.SelectI(ctx, &items, `
 		SELECT fetch_id, piece_cid, piece_raw_size, source_url
 		FROM pdp_piece_pull_items
 		WHERE task_id = $1
@@ -250,7 +250,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	_, err = t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Get the service from pdp_piece_pulls (via fetch_id)
 		var service string
-		err := tx.QueryRow(`
+		err := tx.QueryRowI(`
 			SELECT pp.service
 			FROM pdp_piece_pulls pp
 			JOIN pdp_piece_pull_items ppi ON ppi.fetch_id = pp.id
@@ -268,7 +268,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 
 		// Create parked_piece_refs entry with custore:// URL
 		var pieceRef int64
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
 			INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
 			VALUES ($1, $2, TRUE)
 			RETURNING ref_id
@@ -280,7 +280,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		// Register piece with service (parallels notify_task.go for uploads)
 		// Set needs_save_cache=TRUE for large pieces to enable proactive caching
 		needsSaveCache := uint64(item.PieceRawSize) >= MinSizeForCache
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			INSERT INTO pdp_piecerefs (service, piece_cid, piece_ref, created_at, needs_save_cache)
 			VALUES ($1, $2, $3, NOW(), $4)
 		`, service, item.PieceCid, pieceRef, needsSaveCache)
@@ -289,7 +289,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		}
 
 		// Clear task_id from pull item (task is done)
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			UPDATE pdp_piece_pull_items
 			SET task_id = NULL
 			WHERE fetch_id = $1 AND piece_cid = $2

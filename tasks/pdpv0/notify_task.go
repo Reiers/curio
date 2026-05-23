@@ -71,7 +71,7 @@ func (t *PDPNotifyTask) poll(ctx context.Context) {
 			ID string `db:"id"`
 		}
 
-		err := t.db.Select(ctx, &uploads, `
+		err := t.db.SelectI(ctx, &uploads, `
                 SELECT pu.id
                 FROM pdp_piece_uploads pu
                 JOIN parked_piece_refs pr ON pr.ref_id = pu.piece_ref
@@ -93,7 +93,7 @@ func (t *PDPNotifyTask) poll(ctx context.Context) {
 			failed := false
 
 			t.TF.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
-				n, err := tx.Exec(`
+				n, err := tx.ExecI(`
 					UPDATE pdp_piece_uploads
 					SET notify_task_id = $1
 					WHERE id = $2 AND notify_task_id IS NULL`, id, upload.ID)
@@ -123,7 +123,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		CheckHash      []byte  `db:"check_hash" json:"check_hash"`
 		PieceRawSize   uint64  `db:"piece_raw_size" json:"piece_raw_size"`
 	}
-	err = t.db.QueryRow(ctx, `
+	err = t.db.QueryRowI(ctx, `
         SELECT pu.id, pu.service, pu.piece_cid, pu.notify_url, pu.piece_ref, pu.check_hash_codec, pu.check_hash,
                pp.piece_raw_size
         FROM pdp_piece_uploads pu
@@ -162,7 +162,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		// Insert into pdp_piecerefs
 		// Set needs_save_cache=TRUE for large pieces to enable proactive caching
 		needsSaveCache := padreader.PaddedSize(upload.PieceRawSize).Padded() >= abi.PaddedPieceSize(MinSizeForCache)
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
         INSERT INTO pdp_piecerefs (service, piece_cid, piece_ref, created_at, needs_save_cache)
         VALUES ($1, $2, $3, NOW(), $4)`,
 			upload.Service, upload.PieceCID, upload.PieceRef, needsSaveCache)
@@ -170,7 +170,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 			return false, fmt.Errorf("failed to insert into pdp_piecerefs: %w", err)
 		}
 
-		_, err = tx.Exec(`DELETE FROM pdp_piece_uploads WHERE id = $1`, upload.ID)
+		_, err = tx.ExecI(`DELETE FROM pdp_piece_uploads WHERE id = $1`, upload.ID)
 		if err != nil {
 			return false, fmt.Errorf("failed to delete upload ID %s from pdp_piece_uploads: %w", upload.ID, err)
 		}

@@ -26,7 +26,7 @@ func processPendingDataSetCreates(ctx context.Context, db harmonyquery.DBInterfa
 	// Query for pdp_data_set_creates entries where ok = TRUE and data_set_created = FALSE
 	var dataSetCreates []DataSetCreate
 
-	err := db.Select(ctx, &dataSetCreates, `
+	err := db.SelectI(ctx, &dataSetCreates, `
         SELECT create_message_hash, service
         FROM pdp_data_set_creates
         WHERE ok = TRUE AND data_set_created = FALSE
@@ -62,7 +62,7 @@ func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, psc 
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	log.Debugw("Fetching tx_receipt from message_waits_eth", "txHash", psc.CreateMessageHash)
-	err := db.QueryRow(ctx, `
+	err := db.QueryRowI(ctx, `
         SELECT tx_receipt
         FROM message_waits_eth
         WHERE signed_tx_hash = $1
@@ -106,7 +106,7 @@ func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, psc 
 	}
 	_, err = db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Insert a new entry into pdp_data_sets
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
         INSERT INTO pdp_data_sets (id, create_message_hash, service, proving_period, challenge_window)
         VALUES ($1, $2, $3, $4, $5)
     `, dataSetId, psc.CreateMessageHash, psc.Service, provingPeriod, challengeWindow)
@@ -115,7 +115,7 @@ func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, psc 
 		}
 
 		// Update pdp_data_set_creates to set data_set_created = TRUE
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
         UPDATE pdp_data_set_creates
         SET data_set_created = TRUE
         WHERE create_message_hash = $1

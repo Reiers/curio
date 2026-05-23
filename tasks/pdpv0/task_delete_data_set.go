@@ -38,7 +38,7 @@ func NewDeleteDataSetTask(db harmonyquery.DBInterface, ethClient ethchain.EthCli
 
 func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 	var dataSetId int64
-	err = t.db.QueryRow(ctx, `SELECT id FROM pdp_delete_data_set WHERE delete_data_set_task_id = $1`, taskID).Scan(&dataSetId)
+	err = t.db.QueryRowI(ctx, `SELECT id FROM pdp_delete_data_set WHERE delete_data_set_task_id = $1`, taskID).Scan(&dataSetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return true, nil
@@ -64,7 +64,7 @@ func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 	}
 
 	if !live {
-		n, err := t.db.Exec(ctx, `UPDATE pdp_delete_data_set SET 
+		n, err := t.db.ExecI(ctx, `UPDATE pdp_delete_data_set SET 
                                after_delete_data_set = TRUE,
                                delete_data_set_task_id = NULL,
                                terminated  = TRUE
@@ -105,7 +105,7 @@ func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 	}
 
 	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-		n, err := tx.Exec(`UPDATE pdp_delete_data_set SET 
+		n, err := tx.ExecI(`UPDATE pdp_delete_data_set SET 
                                delete_tx_hash = $2, 
                                after_delete_data_set = TRUE,
                                delete_data_set_task_id = NULL
@@ -118,7 +118,7 @@ func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 			return false, xerrors.Errorf("expected to update 1 row but got %d", n)
 		}
 
-		_, err = tx.Exec(`INSERT INTO message_waits_eth (signed_tx_hash, tx_status) VALUES ($1, $2)`, txHash.Hex(), "pending")
+		_, err = tx.ExecI(`INSERT INTO message_waits_eth (signed_tx_hash, tx_status) VALUES ($1, $2)`, txHash.Hex(), "pending")
 		if err != nil {
 			return false, xerrors.Errorf("failed to insert into message_waits_eth: %w", err)
 		}
@@ -174,7 +174,7 @@ func (t *DeleteDataSetTask) schedule(ctx context.Context, addTaskFunc harmonytas
 				TerminationEpoch int64 `db:"service_termination_epoch"`
 			}
 
-			err = tx.Select(&pendings, `SELECT id,
+			err = tx.SelectI(&pendings, `SELECT id,
        												service_termination_epoch
 											FROM pdp_delete_data_set
 											WHERE delete_data_set_task_id IS NULL
@@ -194,7 +194,7 @@ func (t *DeleteDataSetTask) schedule(ctx context.Context, addTaskFunc harmonytas
 
 			pending := pendings[0]
 
-			n, err := tx.Exec(`UPDATE pdp_delete_data_set
+			n, err := tx.ExecI(`UPDATE pdp_delete_data_set
 									SET delete_data_set_task_id = $1
 									WHERE id = $2
 									  AND delete_data_set_task_id IS NULL

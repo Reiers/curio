@@ -62,7 +62,7 @@ func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 		}
 
 		currentHeight := apply.Height()
-		err := db.Select(ctx, &toCallNext, `
+		err := db.SelectI(ctx, &toCallNext, `
                 SELECT id
                 FROM pdp_data_sets
                 WHERE challenge_request_task_id IS NULL
@@ -77,7 +77,7 @@ func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 		for _, ps := range toCallNext {
 			n.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Update pdp_data_sets to set challenge_request_task_id = id
-				affected, err := tx.Exec(`
+				affected, err := tx.ExecI(`
                         UPDATE pdp_data_sets
                         SET challenge_request_task_id = $1
                         WHERE id = $2 AND challenge_request_task_id IS NULL
@@ -107,7 +107,7 @@ func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 // only valid for first-time initialization.
 func resetDatasetToInitPP(ctx context.Context, db harmonyquery.DBInterface, dataSetId int64) error {
 	log.Infow("resetting dataset to init proving period state", "dataSetId", dataSetId)
-	_, err := db.Exec(ctx, `
+	_, err := db.ExecI(ctx, `
              UPDATE pdp_data_sets
              SET challenge_request_msg_hash = NULL,
                      prove_at_epoch = NULL,
@@ -125,7 +125,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	// Select the data set where challenge_request_task_id = taskID
 	var dataSetId int64
 
-	err = n.db.QueryRow(ctx, `
+	err = n.db.QueryRowI(ctx, `
         SELECT id
         FROM pdp_data_sets
         WHERE challenge_request_task_id = $1 AND prove_at_epoch IS NOT NULL
@@ -246,7 +246,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	// Update the database in a transaction
 	_, err = n.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update pdp_data_sets
-		affected, err := tx.Exec(`
+		affected, err := tx.ExecI(`
             UPDATE pdp_data_sets
             SET challenge_request_msg_hash = $1,
                 prev_challenge_request_epoch = $2,
@@ -261,7 +261,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 		}
 
 		// Insert into message_waits_eth
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
             INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
             VALUES ($1, 'pending') ON CONFLICT DO NOTHING
         `, txHash.Hex())
@@ -295,7 +295,7 @@ func (n *NextProvingPeriodTask) processPendingPieceDeletes(ctx context.Context, 
 		TxSuccess sql.NullBool `db:"tx_success"`
 	}
 
-	err := n.db.Select(ctx, &pendingDeletes, `SELECT
+	err := n.db.SelectI(ctx, &pendingDeletes, `SELECT
     												psp.piece_id,
     												psp.rm_message_hash,
 													mwe.tx_success
@@ -328,7 +328,7 @@ func (n *NextProvingPeriodTask) processPendingPieceDeletes(ctx context.Context, 
 	for _, piece := range pendingDeletes {
 		if !piece.TxSuccess.Valid {
 			log.Errorf("invalid message_waits_eth state for piece (%d:%d) tx %s neither successful or unsuccessful", dataSetId, piece.PieceID, piece.TxHash)
-			_, err := n.db.Exec(ctx, `UPDATE pdp_data_set_pieces SET rm_message_hash = NULL WHERE data_set = $1 AND piece_id = $2 AND rm_message_hash = $3`, dataSetId, piece.PieceID, piece.TxHash)
+			_, err := n.db.ExecI(ctx, `UPDATE pdp_data_set_pieces SET rm_message_hash = NULL WHERE data_set = $1 AND piece_id = $2 AND rm_message_hash = $3`, dataSetId, piece.PieceID, piece.TxHash)
 			if err != nil {
 				return xerrors.Errorf("failed to clear stuck rm_message_hash %s: %w", piece.TxHash, err)
 			}
@@ -337,7 +337,7 @@ func (n *NextProvingPeriodTask) processPendingPieceDeletes(ctx context.Context, 
 
 		if !piece.TxSuccess.Bool {
 			log.Errorf("failed to process pending piece delete as transaction %s failed", piece.TxHash)
-			_, err := n.db.Exec(ctx, `UPDATE pdp_data_set_pieces SET rm_message_hash = NULL WHERE data_set = $1 AND piece_id = $2 AND rm_message_hash = $3`, dataSetId, piece.PieceID, piece.TxHash)
+			_, err := n.db.ExecI(ctx, `UPDATE pdp_data_set_pieces SET rm_message_hash = NULL WHERE data_set = $1 AND piece_id = $2 AND rm_message_hash = $3`, dataSetId, piece.PieceID, piece.TxHash)
 			if err != nil {
 				return xerrors.Errorf("failed to clear stuck rm_message_hash %s: %w", piece.TxHash, err)
 			}
@@ -357,7 +357,7 @@ func (n *NextProvingPeriodTask) processPendingPieceDeletes(ctx context.Context, 
 			if live {
 				log.Warnw("piece is live but not in scheduled removals despite successful delete tx; (possible chain reorg) clearing stale delete tracking",
 					"dataSetId", dataSetId, "pieceID", piece.PieceID, "txHash", piece.TxHash)
-				_, err := n.db.Exec(ctx, `UPDATE pdp_data_set_pieces SET rm_message_hash = NULL
+				_, err := n.db.ExecI(ctx, `UPDATE pdp_data_set_pieces SET rm_message_hash = NULL
                               WHERE data_set = $1 AND piece_id = $2 AND rm_message_hash = $3`,
 					dataSetId, piece.PieceID, piece.TxHash)
 				if err != nil {
@@ -370,7 +370,7 @@ func (n *NextProvingPeriodTask) processPendingPieceDeletes(ctx context.Context, 
 			log.Infow("noticed scheduled deletion, marking as removed", "dataSetId", dataSetId, "pieceID", piece.PieceID, "txHash", piece.TxHash)
 		}
 
-		m, err := n.db.Exec(ctx, `UPDATE pdp_data_set_pieces
+		m, err := n.db.ExecI(ctx, `UPDATE pdp_data_set_pieces
 								SET removed = TRUE
 								WHERE data_set = $1
 								  AND piece_id = $2
@@ -395,7 +395,7 @@ func (n *NextProvingPeriodTask) refreshProvingPeriod(ctx context.Context, dataSe
 		return xerrors.Errorf("failed to GetPDPConfig: %w", err)
 	}
 
-	_, err = n.db.Exec(ctx, `UPDATE pdp_data_sets
+	_, err = n.db.ExecI(ctx, `UPDATE pdp_data_sets
 								SET proving_period = $1,
 									challenge_window = $2
 								WHERE id = $3

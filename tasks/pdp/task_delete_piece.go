@@ -39,7 +39,7 @@ func (p *PDPTaskDeletePiece) Do(ctx context.Context, taskID harmonytask.TaskID, 
 		ExtraData []byte  `db:"extra_data"`
 	}
 
-	err = p.db.Select(ctx, &rdeletes, `SELECT id, set_id, pieces, extra_data FROM pdp_piece_delete WHERE task_id = $1 AND tx_hash IS NULL`, taskID)
+	err = p.db.SelectI(ctx, &rdeletes, `SELECT id, set_id, pieces, extra_data FROM pdp_piece_delete WHERE task_id = $1 AND tx_hash IS NULL`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to get task details from DB: %w", err)
 	}
@@ -113,7 +113,7 @@ func (p *PDPTaskDeletePiece) Do(ctx context.Context, taskID harmonytask.TaskID, 
 	txHashLower := strings.ToLower(txHash.Hex())
 
 	comm, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-		n, err := tx.Exec(`UPDATE pdp_piece_delete SET tx_hash = $1, task_id = NULL WHERE task_id = $2`, txHashLower, taskID)
+		n, err := tx.ExecI(`UPDATE pdp_piece_delete SET tx_hash = $1, task_id = NULL WHERE task_id = $2`, txHashLower, taskID)
 		if err != nil {
 			return false, xerrors.Errorf("failed to update pdp_piece_delete: %w", err)
 		}
@@ -121,7 +121,7 @@ func (p *PDPTaskDeletePiece) Do(ctx context.Context, taskID harmonytask.TaskID, 
 			return false, xerrors.Errorf("incorrect number of rows updated for pdp_piece_delete: %d", n)
 		}
 
-		_, err = tx.Exec(`INSERT INTO message_waits_eth (signed_tx_hash, tx_status) VALUES ($1, $2)`, txHashLower, "pending")
+		_, err = tx.ExecI(`INSERT INTO message_waits_eth (signed_tx_hash, tx_status) VALUES ($1, $2)`, txHashLower, "pending")
 		if err != nil {
 			return false, xerrors.Errorf("failed to insert into message_waits_eth: %w", err)
 		}
@@ -169,7 +169,7 @@ func (p *PDPTaskDeletePiece) schedule(ctx context.Context, taskFunc harmonytask.
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
-			err := tx.QueryRow(`SELECT id FROM pdp_piece_delete 
+			err := tx.QueryRowI(`SELECT id FROM pdp_piece_delete 
 								  WHERE task_id IS NULL 
 									AND tx_hash IS NULL LIMIT 1`).Scan(&did)
 			if err != nil {
@@ -182,7 +182,7 @@ func (p *PDPTaskDeletePiece) schedule(ctx context.Context, taskFunc harmonytask.
 				return false, xerrors.Errorf("no valid deal ID found for scheduling")
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_piece_delete SET task_id = $1 WHERE id = $2 AND task_id IS NULL AND tx_hash IS NULL`, id, did)
+			_, err = tx.ExecI(`UPDATE pdp_piece_delete SET task_id = $1 WHERE id = $2 AND task_id IS NULL AND tx_hash IS NULL`, id, did)
 			if err != nil {
 				return false, xerrors.Errorf("failed to update pdp_piece_delete: %w", err)
 			}

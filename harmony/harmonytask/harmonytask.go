@@ -331,7 +331,7 @@ func NewWithReg(
 			PostedTime time.Time `db:"posted_time"`
 		}
 
-		err := db.Select(e.cfg.ctx, &taskRet, `SELECT id, name, update_time, retries, posted_time FROM harmony_task WHERE owner_id=$1`, e.cfg.ownerID)
+		err := db.SelectI(e.cfg.ctx, &taskRet, `SELECT id, name, update_time, retries, posted_time FROM harmony_task WHERE owner_id=$1`, e.cfg.ownerID)
 		if err != nil {
 			return nil, err
 		}
@@ -348,7 +348,7 @@ func NewWithReg(
 			if h == nil || !h.considerWork(workSourceRecover, []task{{ID: TaskID(w.ID), UpdateTime: w.UpdateTime, PostedTime: w.PostedTime, Retries: w.Retries}}, eventEmitter{e.schedulerChannel}) {
 				// Task type no longer registered on this node (config change);
 				// release the claim so another node can pick it up.
-				_, err := db.Exec(e.cfg.ctx, `UPDATE harmony_task SET owner_id=NULL WHERE id=$1 AND owner_id=$2`, w.ID, e.cfg.ownerID)
+				_, err := db.ExecI(e.cfg.ctx, `UPDATE harmony_task SET owner_id=NULL WHERE id=$1 AND owner_id=$2`, w.ID, e.cfg.ownerID)
 				if err != nil {
 					log.Errorw("Cannot remove self from owner field", "error", err)
 					continue
@@ -582,7 +582,7 @@ func (e *TaskEngine) TestONLY_SetPollDuration(d time.Duration) { e.atomics.pollD
 func (e *TaskEngine) checkNodeFlags() (bool, error) {
 	var unschedulable bool
 	var restartRequest *time.Time
-	err := e.cfg.db.QueryRow(e.cfg.ctx, `SELECT unschedulable, restart_request FROM harmony_machines WHERE host_and_port=$1`, e.cfg.hostAndPort).Scan(&unschedulable, &restartRequest)
+	err := e.cfg.db.QueryRowI(e.cfg.ctx, `SELECT unschedulable, restart_request FROM harmony_machines WHERE host_and_port=$1`, e.cfg.hostAndPort).Scan(&unschedulable, &restartRequest)
 	if err != nil {
 		return false, err
 	}
@@ -596,7 +596,7 @@ func (e *TaskEngine) checkNodeFlags() (bool, error) {
 
 func (e *TaskEngine) restartIfNoTasksPending(pendingSince time.Time) {
 	var tasksPending int
-	err := e.cfg.db.QueryRow(e.cfg.ctx, `SELECT COUNT(*) FROM harmony_task WHERE owner_id=$1`, e.cfg.ownerID).Scan(&tasksPending)
+	err := e.cfg.db.QueryRowI(e.cfg.ctx, `SELECT COUNT(*) FROM harmony_task WHERE owner_id=$1`, e.cfg.ownerID).Scan(&tasksPending)
 	if err != nil {
 		log.Error("Unable to check for tasks pending: ", err)
 		return
@@ -604,7 +604,7 @@ func (e *TaskEngine) restartIfNoTasksPending(pendingSince time.Time) {
 	if tasksPending == 0 {
 		log.Infow("no tasks pending, restarting", "ownerID", e.cfg.ownerID, "pendingSince", pendingSince, "took", time.Since(pendingSince))
 
-		_, err = e.cfg.db.Exec(e.cfg.ctx, `UPDATE harmony_machines SET restart_request=NULL, unschedulable=FALSE WHERE host_and_port=$1`, e.cfg.hostAndPort)
+		_, err = e.cfg.db.ExecI(e.cfg.ctx, `UPDATE harmony_machines SET restart_request=NULL, unschedulable=FALSE WHERE host_and_port=$1`, e.cfg.hostAndPort)
 		if err != nil {
 			log.Error("Unable to unset restart request: ", err)
 			return
@@ -662,7 +662,7 @@ func (e *TaskEngine) singletonRunNowPoller() {
 		var requested []struct {
 			TaskName string `db:"task_name"`
 		}
-		err := e.cfg.db.Select(e.cfg.ctx, &requested,
+		err := e.cfg.db.SelectI(e.cfg.ctx, &requested,
 			`SELECT task_name FROM harmony_task_singletons WHERE run_now_request = TRUE`)
 		if err != nil {
 			log.Errorw("singletonRunNowPoller: failed to query", "error", err)
@@ -689,7 +689,7 @@ func (e *TaskEngine) singletonRunNowPoller() {
 // pending or running (unique-constraint violation), it is silently skipped.
 func (e *TaskEngine) RestartTaskByID(id TaskID, name string, postedTime time.Time) error {
 	_, err := e.cfg.db.BeginTransactionI(e.cfg.ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		c, err := tx.Exec(`
+		c, err := tx.ExecI(`
 			INSERT INTO harmony_task (id, initiated_by, update_time, posted_time, owner_id, added_by, previous_task, name)
 			VALUES ($1, NULL, NOW(), $2, NULL, $3, NULL, $4)
 		`, id, postedTime, e.cfg.ownerID, name)
@@ -736,7 +736,7 @@ func (e *TaskEngine) AddTaskByName(name string, extra func(TaskID, harmonyquery.
 	var postedAt time.Time
 retryAddTask:
 	committed, err := e.cfg.db.BeginTransactionI(e.cfg.ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		err := tx.QueryRow(`INSERT INTO harmony_task (name, added_by, posted_time) 
+		err := tx.QueryRowI(`INSERT INTO harmony_task (name, added_by, posted_time) 
           VALUES ($1, $2, CURRENT_TIMESTAMP) RETURNING id, posted_time`, name, e.cfg.ownerID).Scan(&tID, &postedAt)
 		if err != nil {
 			return false, fmt.Errorf("could not insert into harmonyTask: %w", err)

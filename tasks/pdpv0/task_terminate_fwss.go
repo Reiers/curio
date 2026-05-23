@@ -39,7 +39,7 @@ func NewTerminateServiceTask(db harmonyquery.DBInterface, ethClient ethchain.Eth
 
 func (t *TerminateFWSSTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 	var dataSetId int64
-	err = t.db.QueryRow(ctx, `SELECT id FROM pdp_delete_data_set WHERE terminate_service_task_id = $1`, taskID).Scan(&dataSetId)
+	err = t.db.QueryRowI(ctx, `SELECT id FROM pdp_delete_data_set WHERE terminate_service_task_id = $1`, taskID).Scan(&dataSetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return true, nil
@@ -63,7 +63,7 @@ func (t *TerminateFWSSTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 	}
 
 	if ds.PdpEndEpoch.Int64() != 0 {
-		n, err := t.db.Exec(ctx, `UPDATE pdp_delete_data_set 
+		n, err := t.db.ExecI(ctx, `UPDATE pdp_delete_data_set 
 									SET after_terminate_service = TRUE,
 									    terminate_service_task_id = NULL,
 									    service_termination_epoch = $2
@@ -108,7 +108,7 @@ func (t *TerminateFWSSTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 		return false, xerrors.Errorf("failed to send transaction: %w", err)
 	}
 
-	n, err := t.db.Exec(ctx, `UPDATE pdp_delete_data_set 
+	n, err := t.db.ExecI(ctx, `UPDATE pdp_delete_data_set 
 									SET terminate_tx_hash = $2, 
 									    after_terminate_service = TRUE,
 									    terminate_service_task_id = NULL
@@ -153,7 +153,7 @@ func (t *TerminateFWSSTask) schedule(ctx context.Context, addTaskFunc harmonytas
 
 			var pendings []int64
 
-			err := tx.Select(&pendings, `SELECT id FROM pdp_delete_data_set WHERE terminate_service_task_id IS NULL AND after_terminate_service = FALSE LIMIT 1`)
+			err := tx.SelectI(&pendings, `SELECT id FROM pdp_delete_data_set WHERE terminate_service_task_id IS NULL AND after_terminate_service = FALSE LIMIT 1`)
 
 			if err != nil {
 				return false, xerrors.Errorf("failed to select pending data sets: %w", err)
@@ -166,7 +166,7 @@ func (t *TerminateFWSSTask) schedule(ctx context.Context, addTaskFunc harmonytas
 
 			pending := pendings[0]
 
-			n, err := tx.Exec(`UPDATE pdp_delete_data_set SET terminate_service_task_id = $1 WHERE id = $2 AND terminate_service_task_id IS NULL AND after_terminate_service = FALSE`, taskID, pending)
+			n, err := tx.ExecI(`UPDATE pdp_delete_data_set SET terminate_service_task_id = $1 WHERE id = $2 AND terminate_service_task_id IS NULL AND after_terminate_service = FALSE`, taskID, pending)
 
 			if err != nil {
 				return false, xerrors.Errorf("failed to update pdp_delete_data_set: %w", err)
@@ -192,7 +192,7 @@ var _ = harmonytask.Reg(&TerminateFWSSTask{})
 
 func getPDPOwner(ctx context.Context, db harmonyquery.DBInterface) (common.Address, error) {
 	var owner string
-	err := db.QueryRow(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&owner)
+	err := db.QueryRowI(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&owner)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return common.Address{}, xerrors.Errorf("no sender address with role 'pdp' found")

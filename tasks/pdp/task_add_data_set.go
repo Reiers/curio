@@ -47,7 +47,7 @@ func (p *PDPTaskAddDataSet) Do(ctx context.Context, taskID harmonytask.TaskID, s
 		ExtraData    []byte `db:"extra_data"`
 	}
 
-	err = p.db.Select(ctx, &pcreates, `SELECT record_keeper, extra_data FROM pdp_data_set_create WHERE task_id = $1 AND tx_hash IS NULL`, taskID)
+	err = p.db.SelectI(ctx, &pcreates, `SELECT record_keeper, extra_data FROM pdp_data_set_create WHERE task_id = $1 AND tx_hash IS NULL`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to get task details from DB: %w", err)
 	}
@@ -108,14 +108,14 @@ func (p *PDPTaskAddDataSet) Do(ctx context.Context, taskID harmonytask.TaskID, s
 	// Insert into message_waits_eth and pdp_data_set_create
 	txHashLower := strings.ToLower(txHash.Hex())
 	comm, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-		n, err := tx.Exec(`UPDATE pdp_data_set_create SET tx_hash = $1, task_id = NULL WHERE task_id = $2`, txHashLower, taskID)
+		n, err := tx.ExecI(`UPDATE pdp_data_set_create SET tx_hash = $1, task_id = NULL WHERE task_id = $2`, txHashLower, taskID)
 		if err != nil {
 			return false, xerrors.Errorf("failed to update pdp_data_set_create: %w", err)
 		}
 		if n != 1 {
 			return false, xerrors.Errorf("incorrect number of rows updated for pdp_data_set_create: %d", n)
 		}
-		_, err = tx.Exec(`INSERT INTO message_waits_eth (signed_tx_hash, tx_status) VALUES ($1, $2)`, txHashLower, "pending")
+		_, err = tx.ExecI(`INSERT INTO message_waits_eth (signed_tx_hash, tx_status) VALUES ($1, $2)`, txHashLower, "pending")
 		if err != nil {
 			return false, xerrors.Errorf("failed to insert into message_waits_eth: %w", err)
 		}
@@ -159,7 +159,7 @@ func (p *PDPTaskAddDataSet) schedule(ctx context.Context, taskFunc harmonytask.A
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
-			err := tx.QueryRow(`SELECT id FROM pdp_data_set_create WHERE task_id IS NULL AND tx_hash IS NULL LIMIT 1`).Scan(&did)
+			err := tx.QueryRowI(`SELECT id FROM pdp_data_set_create WHERE task_id IS NULL AND tx_hash IS NULL LIMIT 1`).Scan(&did)
 			if err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					return false, nil
@@ -170,7 +170,7 @@ func (p *PDPTaskAddDataSet) schedule(ctx context.Context, taskFunc harmonytask.A
 				return false, xerrors.Errorf("no valid id found for taskID")
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_data_set_create SET task_id = $1 WHERE id = $2 AND tx_hash IS NULL`, id, did)
+			_, err = tx.ExecI(`UPDATE pdp_data_set_create SET task_id = $1 WHERE id = $2 AND tx_hash IS NULL`, id, did)
 			if err != nil {
 				return false, xerrors.Errorf("failed to update pdp_data_set_create: %w", err)
 			}
@@ -187,7 +187,7 @@ func (p *PDPTaskAddDataSet) schedule(ctx context.Context, taskFunc harmonytask.A
 // getSenderAddress retrieves the sender address from the database where role = 'pdp' limit 1
 func (p *PDPTaskAddDataSet) getSenderAddress(ctx context.Context) (common.Address, error) {
 	var addressStr string
-	err := p.db.QueryRow(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&addressStr)
+	err := p.db.QueryRowI(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&addressStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return common.Address{}, errors.New("no sender address with role 'pdp' found")

@@ -59,7 +59,7 @@ func _processPendingCleanup(ctx context.Context, db harmonyquery.DBInterface, et
 		PieceID   int64 `db:"piece_id"`
 	}
 
-	err := db.Select(ctx, &pieces, `SELECT data_set, piece_id FROM pdp_data_set_pieces WHERE removed = TRUE`)
+	err := db.SelectI(ctx, &pieces, `SELECT data_set, piece_id FROM pdp_data_set_pieces WHERE removed = TRUE`)
 	if err != nil {
 		return xerrors.Errorf("failed to select pending piece deletes: %w", err)
 	}
@@ -82,7 +82,7 @@ func _processPendingCleanup(ctx context.Context, db harmonyquery.DBInterface, et
 		}
 
 		if !live {
-			_, err = db.Exec(ctx, `DELETE FROM pdp_data_set_pieces WHERE data_set = $1 AND piece_id = $2 AND removed = TRUE`, piece.DataSetID, piece.PieceID)
+			_, err = db.ExecI(ctx, `DELETE FROM pdp_data_set_pieces WHERE data_set = $1 AND piece_id = $2 AND removed = TRUE`, piece.DataSetID, piece.PieceID)
 			if err != nil {
 				return xerrors.Errorf("failed to delete piece %d: %w", piece.PieceID, err)
 			}
@@ -103,7 +103,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 		RawSize   int64  `db:"piece_raw_size"`
 	}
 
-	err := db.Select(ctx, &pieces, `SELECT
+	err := db.SelectI(ctx, &pieces, `SELECT
     										pr.id,
     										pr.piece_cid,
        										pp.piece_padded_size,
@@ -132,7 +132,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 
 	var peerID string
 	var privKeyBytes []byte
-	err = db.QueryRow(ctx, `SELECT priv_key, peer_id FROM ipni_peerid WHERE sp_id = -2`).Scan(&privKeyBytes, &peerID)
+	err = db.QueryRowI(ctx, `SELECT priv_key, peer_id FROM ipni_peerid WHERE sp_id = -2`).Scan(&privKeyBytes, &peerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // IPNI not init yet
@@ -162,7 +162,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 		for range 5 {
 			comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 				var deletable bool
-				err = tx.QueryRow(`SELECT EXISTS(
+				err = tx.QueryRowI(`SELECT EXISTS(
 					SELECT 1 FROM pdp_piecerefs
 					WHERE id = $1 AND data_set_refcount = 0
 					  AND NOT EXISTS (
@@ -183,13 +183,13 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 				}
 
 				var skipCleanup bool
-				err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1 AND id != $2 LIMIT 1)`, piece.PieceCID, piece.ID).Scan(&skipCleanup)
+				err = tx.QueryRowI(`SELECT EXISTS(SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1 AND id != $2 LIMIT 1)`, piece.PieceCID, piece.ID).Scan(&skipCleanup)
 				if err != nil {
 					return false, xerrors.Errorf("failed to check if piece is referenced: %w", err)
 				}
 
 				// Let's drop the PDP piece ref even if we don't publish the removal ad
-				n, err := tx.Exec(`DELETE FROM pdp_piecerefs
+				n, err := tx.ExecI(`DELETE FROM pdp_piecerefs
 					WHERE id = $1 AND data_set_refcount = 0
 					  AND NOT EXISTS (
 					      SELECT 1 FROM pdp_data_set_piece_adds a
@@ -211,7 +211,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 					return false, xerrors.Errorf("expected to delete 1 row but deleted %d", n)
 				}
 
-				_, err = tx.Exec(`DELETE FROM parked_piece_refs WHERE ref_id = $1`, piece.PieceRef)
+				_, err = tx.ExecI(`DELETE FROM parked_piece_refs WHERE ref_id = $1`, piece.PieceRef)
 				if err != nil {
 					return false, xerrors.Errorf("failed to delete parked piece ref %d: %w", piece.PieceRef, err)
 				}
@@ -224,7 +224,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 				var contextID []byte
 				var isRMAd bool
 
-				err = tx.QueryRow(`SELECT
+				err = tx.QueryRowI(`SELECT
     									context_id,
     									is_rm
 									FROM ipni
@@ -246,7 +246,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 				}
 
 				var prev string
-				err = tx.QueryRow(`SELECT head FROM ipni_head WHERE provider = $1`, peerID).Scan(&prev)
+				err = tx.QueryRowI(`SELECT head FROM ipni_head WHERE provider = $1`, peerID).Scan(&prev)
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return false, xerrors.Errorf("querying previous head: %w", err)
 				}
@@ -311,7 +311,7 @@ func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterf
 				}
 
 				var inserted bool
-				err = tx.QueryRow(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+				err = tx.QueryRowI(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 					ad.(cidlink.Link).Cid.String(), adv.ContextID, md, pcidV2.String(), piece.PieceCID, piece.PieceSize, adv.IsRm, adv.Provider, strings.Join(adv.Addresses, "|"),
 					adv.Signature, adv.Entries.String(), nullableText(prev)).Scan(&inserted)
 				if err != nil {

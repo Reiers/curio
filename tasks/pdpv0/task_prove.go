@@ -95,7 +95,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 				}
 
 				currentHeight := apply.Height() - 1 // -1 to delay by a block to reduce chance for `premature proof` due to reorgs
-				err := tx.Select(&dataSets, `
+				err := tx.SelectI(&dataSets, `
                     SELECT p.id
                     FROM pdp_data_sets p
                     INNER JOIN message_waits_eth mw on mw.signed_tx_hash = p.challenge_request_msg_hash
@@ -122,7 +122,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 				todo := dataSets[0]
 
 				// Insert a new task into pdpv0_prove_tasks
-				affected, err := tx.Exec(`
+				affected, err := tx.ExecI(`
                     INSERT INTO pdp_prove_tasks (data_set, task_id)
                     VALUES ($1, $2) ON CONFLICT DO NOTHING
                 `, todo.ID, id)
@@ -134,7 +134,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 				}
 
 				// Update pdp_data_sets to prevent scheduling more prove tasks for this data set.
-				affected, err = tx.Exec(`
+				affected, err = tx.ExecI(`
                     UPDATE pdp_data_sets
                     SET challenge_request_msg_hash = NULL
                     WHERE id = $1 AND challenge_request_msg_hash IS NOT NULL
@@ -179,7 +179,7 @@ func (p *ProveTask) disableProving(ctx context.Context, dataSetId int64) error {
 	// Now the dataset won't get proven until one more piece gets added to set `init_ready = TRUE`.
 	// Better pattern here would be to react to events emitted in our messages from the transactions we send to PDPVerifier.
 	// As ordering can get even more tricky if you consider that transactions are sent async.
-	_, err := p.db.Exec(ctx, `
+	_, err := p.db.ExecI(ctx, `
 		UPDATE pdp_data_sets
 		SET challenge_request_msg_hash = NULL, prove_at_epoch = NULL, init_ready = FALSE,
 			prev_challenge_request_epoch = NULL
@@ -195,7 +195,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 	// Retrieve data set and challenge epoch for the task
 	var dataSetId int64
 
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT data_set
         FROM pdp_prove_tasks
         WHERE task_id = $1
@@ -226,7 +226,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 
 	var proveAtEpoch *int64
 	var challengeWindow *int64
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
 		SELECT prove_at_epoch, challenge_window
 		FROM pdp_data_sets
 		WHERE id = $1
@@ -656,7 +656,7 @@ func (p *ProveTask) provePiece(ctx context.Context, dataSetId int64, pieceId int
 
 	var subPieces []subPieceMeta
 
-	err := p.db.Select(context.Background(), &subPieces, `
+	err := p.db.SelectI(context.Background(), &subPieces, `
 			SELECT ppr.id as pieceref_id, ppr.cached_proofgen_failure_count as cached_proofgen_failure_count,
 				   dsp.piece, dsp.sub_piece, dsp.sub_piece_offset, dsp.sub_piece_size, dsp.removed,
 			       pp.piece_raw_size
@@ -719,7 +719,7 @@ func (p *ProveTask) provePiece(ctx context.Context, dataSetId int64, pieceId int
 
 				// Mark the cache for rehydration now, and we will fallback to full memtree
 				log.Warnw("expected to use cached proof for large sub-piece but failed, will attempt to rehydrate cache and fall back to full memtree", "dataSetId", dataSetId, "pieceId", pieceId, "subPieceSize", challSubPiece.SubPieceSize, "rawSize", challSubPiece.PieceRawSize, "cachedProofgenFailureCount", challSubPiece.CachedProofgenFailureCount)
-				_, err := p.db.Exec(ctx, `
+				_, err := p.db.ExecI(ctx, `
 						UPDATE pdp_piecerefs
 						SET needs_save_cache = TRUE, caching_task_started = NULL, caching_task_completed = NULL, cached_proofgen_failure_count = $1
 						WHERE id = $2`,
@@ -936,7 +936,7 @@ func (p *ProveTask) provePiece(ctx context.Context, dataSetId int64, pieceId int
 
 func (p *ProveTask) getSenderAddress(ctx context.Context, match common.Address) (common.Address, error) {
 	var addressStr string
-	err := p.db.QueryRow(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' AND address = $1 LIMIT 1`, match.Hex()).Scan(&addressStr)
+	err := p.db.QueryRowI(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' AND address = $1 LIMIT 1`, match.Hex()).Scan(&addressStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return common.Address{}, errors.New("no sender address with role 'pdp' found")

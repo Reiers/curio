@@ -60,7 +60,7 @@ func NewInitProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 		}
 
 		currentHeight := apply.Height()
-		err := db.Select(ctx, &toCallInit, `
+		err := db.SelectI(ctx, &toCallInit, `
                 SELECT id
                 FROM pdp_data_sets
                 WHERE challenge_request_task_id IS NULL
@@ -75,7 +75,7 @@ func NewInitProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 		for _, ps := range toCallInit {
 			ipp.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Update pdp_data_sets to set challenge_request_task_id = id
-				affected, err := tx.Exec(`
+				affected, err := tx.ExecI(`
                         UPDATE pdp_data_sets
                         SET challenge_request_task_id = $1
                         WHERE id = $2 AND challenge_request_task_id IS NULL
@@ -102,7 +102,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 	// Select the data set where challenge_request_task_id = taskID
 	var dataSetId int64
 
-	err = ipp.db.QueryRow(ctx, `
+	err = ipp.db.QueryRowI(ctx, `
         SELECT id
         FROM pdp_data_sets
         WHERE challenge_request_task_id = $1
@@ -138,7 +138,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 		// Initialization is only triggered when thre are leaves (after add piece lands), or we strongly suspect that there are
 		// So we disable proving for this dataset if we end up having no leaves
 		log.Warnw("Initial challange window scheduling skipped", "dataSetId", dataSetId, "reason", "no leaves")
-		_, err = ipp.db.Exec(ctx, `
+		_, err = ipp.db.ExecI(ctx, `
 			UPDATE pdp_data_sets
 			SET init_ready = FALSE
 			WHERE id = $1
@@ -234,7 +234,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 	// Update the database in a transaction
 	_, err = ipp.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update pdp_data_sets
-		affected, err := tx.Exec(`
+		affected, err := tx.ExecI(`
             UPDATE pdp_data_sets
             SET challenge_request_msg_hash = $1,
                 prev_challenge_request_epoch = $2,
@@ -249,7 +249,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 		}
 
 		// Insert into message_waits_eth
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
             INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
             VALUES ($1, 'pending') ON CONFLICT DO NOTHING
         `, txHashLower)

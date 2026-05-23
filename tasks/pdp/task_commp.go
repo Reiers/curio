@@ -50,7 +50,7 @@ func (c *PDPCommpTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 		ID   string `db:"id"`
 	}
 
-	err = c.db.Select(ctx, &pieces, `SELECT id, piece_cid_v2, piece_ref FROM pdp_pipeline 
+	err = c.db.SelectI(ctx, &pieces, `SELECT id, piece_cid_v2, piece_ref FROM pdp_pipeline 
 										WHERE commp_task_id = $1 
 										  AND downloaded = TRUE;`, taskID)
 	if err != nil {
@@ -75,7 +75,7 @@ func (c *PDPCommpTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 	var pieceID []struct {
 		PieceID storiface.PieceNumber `db:"piece_id"`
 	}
-	err = c.db.Select(ctx, &pieceID, `SELECT piece_id FROM parked_piece_refs WHERE ref_id = $1`, piece.Ref)
+	err = c.db.SelectI(ctx, &pieceID, `SELECT piece_id FROM parked_piece_refs WHERE ref_id = $1`, piece.Ref)
 	if err != nil {
 		return false, xerrors.Errorf("getting pieceID: %w", err)
 	}
@@ -124,7 +124,7 @@ func (c *PDPCommpTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 		return false, xerrors.Errorf("pieceSize mismatch: expected %d, got %d", pi.Size, abi.PaddedPieceSize(size))
 	}
 
-	n, err := c.db.Exec(ctx, `UPDATE pdp_pipeline SET after_commp = TRUE, commp_task_id = NULL
+	n, err := c.db.ExecI(ctx, `UPDATE pdp_pipeline SET after_commp = TRUE, commp_task_id = NULL
 										 	WHERE id = $1 
 											  AND piece_cid_v2 = $2
 											  AND downloaded = TRUE
@@ -164,7 +164,7 @@ func (c *PDPCommpTask) CanAccept(ids []harmonytask.TaskID, engine *harmonytask.T
 
 	var selected []harmonytask.TaskID
 
-	err := c.db.QueryRow(ctx, `SELECT COALESCE(array_agg(commp_task_id), '{}')::bigint[] AS commp_task_ids FROM 
+	err := c.db.QueryRowI(ctx, `SELECT COALESCE(array_agg(commp_task_id), '{}')::bigint[] AS commp_task_ids FROM 
 										(
 										    SELECT p.commp_task_id
 											FROM pdp_pipeline p
@@ -212,7 +212,7 @@ func (c *PDPCommpTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
-			err := tx.QueryRow(`SELECT id FROM pdp_pipeline 
+			err := tx.QueryRowI(`SELECT id FROM pdp_pipeline 
 								  WHERE commp_task_id IS NULL 
 									AND after_commp = FALSE
 									AND downloaded = TRUE`).Scan(&did)
@@ -226,7 +226,7 @@ func (c *PDPCommpTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 				return false, xerrors.Errorf("no valid deal ID found for scheduling")
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_pipeline SET commp_task_id = $1 WHERE id = $2 AND commp_task_id IS NULL AND after_commp = FALSE AND downloaded = TRUE`, id, did)
+			_, err = tx.ExecI(`UPDATE pdp_pipeline SET commp_task_id = $1 WHERE id = $2 AND commp_task_id IS NULL AND after_commp = FALSE AND downloaded = TRUE`, id, did)
 			if err != nil {
 				return false, xerrors.Errorf("failed to update pdp_pipeline: %w", err)
 			}

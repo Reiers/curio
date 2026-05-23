@@ -41,7 +41,7 @@ func processPendingDataSetPieceAdds(ctx context.Context, db harmonyquery.DBInter
 	// Query for pdp_data_set_piece_adds entries where add_message_ok = TRUE
 	var pieceAdds []DataSetPieceAdd
 
-	err := db.Select(ctx, &pieceAdds, `
+	err := db.SelectI(ctx, &pieceAdds, `
         SELECT DISTINCT data_set, add_message_hash
         FROM pdp_data_set_piece_adds
         WHERE add_message_ok = TRUE AND pieces_added = FALSE
@@ -71,7 +71,7 @@ func processPendingDataSetPieceAdds(ctx context.Context, db harmonyquery.DBInter
 func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pieceAdd DataSetPieceAdd) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
-	err := db.QueryRow(ctx, `
+	err := db.QueryRowI(ctx, `
         SELECT tx_receipt
         FROM message_waits_eth
         WHERE signed_tx_hash = $1
@@ -106,7 +106,7 @@ func extractAndInsertPiecesFromReceipt(ctx context.Context, db harmonyquery.DBIn
 		pieceAdd.DataSet.Valid = true
 		var exists bool
 		// we check if the dataset exists already to avoid foreign key violation
-		err = db.QueryRow(ctx, `
+		err = db.QueryRowI(ctx, `
 			SELECT EXISTS (
 				SELECT 1
 				FROM pdp_data_sets
@@ -181,7 +181,7 @@ func extractAndInsertPiecesFromReceipt(ctx context.Context, db harmonyquery.DBIn
 	// Begin a database transaction
 	_, err = db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update data set for initialization upon first add
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			UPDATE pdp_data_sets SET init_ready = true
 			WHERE id = $1 AND prev_challenge_request_epoch IS NULL AND challenge_request_msg_hash IS NULL AND prove_at_epoch IS NULL
 			`, pieceAdd.DataSet)
@@ -191,7 +191,7 @@ func extractAndInsertPiecesFromReceipt(ctx context.Context, db harmonyquery.DBIn
 
 		// Fetch the entries from pdp_data_set_piece_adds
 		var pieceAddEntries []PieceAddEntry
-		err := tx.Select(&pieceAddEntries, `
+		err := tx.SelectI(&pieceAddEntries, `
             SELECT data_set, piece, add_message_hash, add_message_index, sub_piece, sub_piece_offset, sub_piece_size, pdp_pieceref
             FROM pdp_data_set_piece_adds
             WHERE add_message_hash = $1
@@ -218,7 +218,7 @@ func extractAndInsertPiecesFromReceipt(ctx context.Context, db harmonyquery.DBIn
 
 			pieceId := pieceIds[entry.AddMessageIndex]
 			// Insert into pdp_data_set_pieces
-			_, err := tx.Exec(`
+			_, err := tx.ExecI(`
                 INSERT INTO pdp_data_set_pieces (
                     data_set,
                     piece,
@@ -239,7 +239,7 @@ func extractAndInsertPiecesFromReceipt(ctx context.Context, db harmonyquery.DBIn
 		}
 
 		// Mark as processed in pdp_data_set_piece_adds (don't delete, for transaction tracking)
-		rowsAffected, err := tx.Exec(`
+		rowsAffected, err := tx.ExecI(`
                       UPDATE pdp_data_set_piece_adds
                       SET pieces_added = TRUE, data_set = $1
                       WHERE add_message_hash = $2 AND pieces_added = FALSE

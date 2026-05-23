@@ -42,7 +42,7 @@ func CalculateBackoffBlocks(failures int) int {
 // MarkDatasetProvingUnrecoverable marks a dataset as having an unrecoverable proving failure.
 // This is called when an unrecoverable error (like DataSetPaymentBeyondEndEpoch) is detected.
 func MarkDatasetProvingUnrecoverable(tx harmonyquery.TxInterface, dataSetId int64, currentHeight int64) error {
-	_, err := tx.Exec(`
+	_, err := tx.ExecI(`
 		UPDATE pdp_data_sets
 		SET unrecoverable_proving_failure_epoch = $2,
 			consecutive_prove_failures = consecutive_prove_failures + 1,
@@ -61,7 +61,7 @@ func MarkDatasetProvingUnrecoverable(tx harmonyquery.TxInterface, dataSetId int6
 func ApplyProvingBackoff(tx harmonyquery.TxInterface, dataSetId int64, currentHeight int64) (unrecoverable bool, err error) {
 	// Get current failure count
 	var currentFailures int
-	err = tx.QueryRow(`
+	err = tx.QueryRowI(`
 		SELECT consecutive_prove_failures FROM pdp_data_sets WHERE id = $1
 	`, dataSetId).Scan(&currentFailures)
 	if err != nil {
@@ -72,7 +72,7 @@ func ApplyProvingBackoff(tx harmonyquery.TxInterface, dataSetId int64, currentHe
 
 	if newFailures >= MaxConsecutiveFailures {
 		// Too many failures, mark as terminated
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			UPDATE pdp_data_sets
 			SET unrecoverable_proving_failure_epoch = $2,
 				consecutive_prove_failures = $3,
@@ -94,7 +94,7 @@ func ApplyProvingBackoff(tx harmonyquery.TxInterface, dataSetId int64, currentHe
 	backoffBlocks := CalculateBackoffBlocks(newFailures)
 	nextAttempt := currentHeight + int64(backoffBlocks)
 
-	_, err = tx.Exec(`
+	_, err = tx.ExecI(`
 		UPDATE pdp_data_sets
 		SET consecutive_prove_failures = $2,
 			next_prove_attempt_at = $3
@@ -112,7 +112,7 @@ func ApplyProvingBackoff(tx harmonyquery.TxInterface, dataSetId int64, currentHe
 
 // ResetProvingFailures resets the failure count after a successful prove.
 func ResetProvingFailures(ctx context.Context, db harmonyquery.DBInterface, dataSetId int64) error {
-	_, err := db.Exec(ctx, `
+	_, err := db.ExecI(ctx, `
 		UPDATE pdp_data_sets
 		SET consecutive_prove_failures = 0,
 			next_prove_attempt_at = NULL

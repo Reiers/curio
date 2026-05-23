@@ -38,7 +38,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		Pieces []int64 `db:"pieces"`
 	}
 
-	err = P.db.Select(ctx, &provingPieces, `SELECT
+	err = P.db.SelectI(ctx, &provingPieces, `SELECT
 											  d.id AS data_set_id,
 											  array_agg(p.piece ORDER BY p.piece) AS pieces
 											FROM pdp_data_set d
@@ -93,7 +93,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 	comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Mark the data set as removed
 		if len(removedPieces) > 0 {
-			_, err = tx.Exec(`UPDATE pdp_data_set SET removed = TRUE, 
+			_, err = tx.ExecI(`UPDATE pdp_data_set SET removed = TRUE, 
                          remove_deal_id = $1, 
                          remove_message_hash = $2 
                          WHERE id = ANY($3)`, "Terminated On Chain", "Terminated On Chain", removedDataSetIDs) // TODO: Figure out how can we reliably get txHash for this from events
@@ -102,7 +102,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 			}
 
 			// Start piece cleanup tasks
-			_, err = tx.Exec(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
+			_, err = tx.ExecI(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
 								SELECT p.add_deal_id, p.piece_cid_v2, TRUE, -1, -1, p.piece_ref
 								FROM pdp_dataset_piece AS p
 								WHERE p.data_set_id = ANY($1)
@@ -112,7 +112,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				return false, xerrors.Errorf("failed to insert into piece_cleanup: %w", err)
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_dataset_piece SET removed = TRUE, 
+			_, err = tx.ExecI(`UPDATE pdp_dataset_piece SET removed = TRUE, 
                          remove_deal_id = $1, 
                          remove_message_hash = $2 
                          WHERE data_set_id = ANY($3)`, "Terminated On Chain", "Terminated On Chain", removedDataSetIDs) // TODO: Figure out how can we reliably get txHash for this from events
@@ -127,7 +127,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				continue
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_dataset_piece SET 
+			_, err = tx.ExecI(`UPDATE pdp_dataset_piece SET 
                              removed = TRUE, 
                              remove_deal_id = $1, 
                              remove_message_hash = $2  WHERE data_set_id = $3 AND piece = ANY($4)`, "Terminated On Chain", "Terminated On Chain", did, pp) // TODO: Figure out how can we reliably get txHash for this from events
@@ -135,7 +135,7 @@ func (P *PDPSyncTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				return false, xerrors.Errorf("failed to update pdp_dataset_piece: %w", err)
 			}
 
-			_, err = tx.Exec(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
+			_, err = tx.ExecI(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
 								SELECT p.add_deal_id, p.piece_cid_v2, TRUE, -1, -1, p.piece_ref
 								FROM pdp_dataset_piece AS p
 								WHERE p.data_set_id = $1

@@ -38,7 +38,7 @@ func processPendingDataSetDeletes(ctx context.Context, db harmonyquery.DBInterfa
 	// Query for pdp_data_set_delete where txHash is not NULL
 	var dataSetDeletes []DataSetDelete
 
-	err := db.Select(ctx, &dataSetDeletes, `
+	err := db.SelectI(ctx, &dataSetDeletes, `
         SELECT id, set_id, tx_hash
         FROM pdp_data_set_delete
         WHERE tx_hash IS NOT NULL`)
@@ -67,7 +67,7 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	var txSuccess bool
-	err := db.QueryRow(ctx, `SELECT tx_receipt, tx_success FROM message_waits_eth WHERE signed_tx_hash = $1 
+	err := db.QueryRowI(ctx, `SELECT tx_receipt, tx_success FROM message_waits_eth WHERE signed_tx_hash = $1 
                                                        AND tx_success IS NOT NULL 
                                                        AND tx_receipt IS NOT NULL`, psd.DeleteMessageHash).Scan(&txReceiptJSON, &txSuccess)
 	if err != nil {
@@ -90,7 +90,7 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 		// This means msg failed, we should let the user know
 		// TODO: Review if error would be in receipt
 		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-			n, err := tx.Exec(`UPDATE market_mk20_deal
+			n, err := tx.ExecI(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
 													'{complete}', to_jsonb(true), true
@@ -102,7 +102,7 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 			if n != 1 {
 				return false, xerrors.Errorf("expected 1 row to be updated, got %d", n)
 			}
-			_, err = tx.Exec(`DELETE FROM pdp_data_set_delete WHERE id = $1`, psd.ID)
+			_, err = tx.ExecI(`DELETE FROM pdp_data_set_delete WHERE id = $1`, psd.ID)
 			if err != nil {
 				return false, xerrors.Errorf("failed to delete row from pdp_data_set_delete: %w", err)
 			}
@@ -119,7 +119,7 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 
 	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 
-		n, err := tx.Exec(`UPDATE pdp_data_set SET removed = TRUE, 
+		n, err := tx.ExecI(`UPDATE pdp_data_set SET removed = TRUE, 
                          remove_deal_id = $1, 
                          remove_message_hash = $2 
                          WHERE id = $3`, psd.ID, psd.DeleteMessageHash, psd.PID)
@@ -130,12 +130,12 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 			return false, xerrors.Errorf("expected 1 row to be updated, got %d", n)
 		}
 
-		_, err = tx.Exec(`DELETE FROM pdp_data_set_delete WHERE id = $1`, psd.ID)
+		_, err = tx.ExecI(`DELETE FROM pdp_data_set_delete WHERE id = $1`, psd.ID)
 		if err != nil {
 			return false, xerrors.Errorf("failed to delete row from pdp_data_set_delete: %w", err)
 		}
 
-		n, err = tx.Exec(`UPDATE market_mk20_deal
+		n, err = tx.ExecI(`UPDATE market_mk20_deal
 							SET pdp_v1 = jsonb_set(pdp_v1, '{complete}', 'true'::jsonb, true)
 							WHERE id = $1;`, psd.ID)
 		if err != nil {
@@ -146,7 +146,7 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 		}
 
 		// Start piece cleanup tasks
-		_, err = tx.Exec(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
+		_, err = tx.ExecI(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
 								SELECT p.add_deal_id, p.piece_cid_v2, TRUE, -1, -1, p.piece_ref
 								FROM pdp_dataset_piece AS p
 								WHERE p.data_set_id = $1
@@ -156,7 +156,7 @@ func processDataSetDelete(ctx context.Context, db harmonyquery.DBInterface, psd 
 			return false, xerrors.Errorf("failed to insert into piece_cleanup: %w", err)
 		}
 
-		_, err = tx.Exec(`UPDATE pdp_dataset_piece SET removed = TRUE, 
+		_, err = tx.ExecI(`UPDATE pdp_dataset_piece SET removed = TRUE, 
                          remove_deal_id = $1, 
                          remove_message_hash = $2 
                          WHERE data_set_id = $3`, psd.ID, psd.DeleteMessageHash, psd.PID)

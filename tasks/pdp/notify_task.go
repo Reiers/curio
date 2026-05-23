@@ -51,7 +51,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		CheckHashCodec string         `db:"check_hash_codec" json:"check_hash_codec"`
 		CheckHash      []byte         `db:"check_hash" json:"check_hash"`
 	}
-	err = t.db.QueryRow(ctx, `
+	err = t.db.QueryRowI(ctx, `
         SELECT id, service, piece_cid, notify_url, piece_ref, check_hash_codec, check_hash 
         FROM pdp_piece_uploads 
         WHERE notify_task_id = $1`, taskID).Scan(
@@ -84,7 +84,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 
 	// Move the entry from pdp_piece_uploads to pdp_piecerefs
 	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		_, err := tx.Exec(`
+		_, err := tx.ExecI(`
 			INSERT INTO pdp_piecerefs (service, piece_cid, piece_ref, created_at) 
 			VALUES ($1, $2, $3, NOW())`,
 			upload.Service, upload.PieceCID, upload.PieceRef)
@@ -92,7 +92,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 			return false, fmt.Errorf("failed to insert into pdp_piecerefs: %w", err)
 		}
 
-		_, err = tx.Exec(`DELETE FROM pdp_piece_uploads WHERE id = $1`, upload.ID)
+		_, err = tx.ExecI(`DELETE FROM pdp_piece_uploads WHERE id = $1`, upload.ID)
 		if err != nil {
 			return false, fmt.Errorf("failed to delete upload ID %s from pdp_piece_uploads: %w", upload.ID, err)
 		}
@@ -150,7 +150,7 @@ func (t *PDPNotifyTask) schedule(ctx context.Context, taskFunc harmonytask.AddTa
 				ID string `db:"id"`
 			}
 
-			err := tx.Select(&uploads, `
+			err := tx.SelectI(&uploads, `
                 SELECT pu.id
                 FROM pdp_piece_uploads pu
                 JOIN parked_piece_refs pr ON pr.ref_id = pu.piece_ref
@@ -171,7 +171,7 @@ func (t *PDPNotifyTask) schedule(ctx context.Context, taskFunc harmonytask.AddTa
 			}
 
 			// Update the pdp_piece_uploads entry to set notify_task_id
-			_, err = tx.Exec(`
+			_, err = tx.ExecI(`
                 UPDATE pdp_piece_uploads 
                 SET notify_task_id = $1 
                 WHERE id = $2 AND notify_task_id IS NULL

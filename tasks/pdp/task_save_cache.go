@@ -53,7 +53,7 @@ func (t *TaskPDPSaveCache) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		PieceRef  string `db:"piece_ref"`
 	}
 
-	err = t.db.Select(ctx, &saveCaches, `SELECT id, piece_cid_v2, data_set_id, piece_ref FROM pdp_pipeline WHERE save_cache_task_id = $1 AND after_save_cache = FALSE`, taskID)
+	err = t.db.SelectI(ctx, &saveCaches, `SELECT id, piece_cid_v2, data_set_id, piece_ref FROM pdp_pipeline WHERE save_cache_task_id = $1 AND after_save_cache = FALSE`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to select rows from pipeline: %w", err)
 	}
@@ -138,7 +138,7 @@ func (t *TaskPDPSaveCache) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		}
 	}
 
-	n, err := t.db.Exec(ctx, `UPDATE pdp_pipeline SET after_save_cache = TRUE, save_cache_task_id = NULL, indexing_created_at = NOW() WHERE save_cache_task_id = $1`, taskID)
+	n, err := t.db.ExecI(ctx, `UPDATE pdp_pipeline SET after_save_cache = TRUE, save_cache_task_id = NULL, indexing_created_at = NOW() WHERE save_cache_task_id = $1`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to update pdp_pipeline: %w", err)
 	}
@@ -177,7 +177,7 @@ func (t *TaskPDPSaveCache) schedule(ctx context.Context, taskFunc harmonytask.Ad
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
-			err := tx.QueryRow(`SELECT id FROM pdp_pipeline 
+			err := tx.QueryRowI(`SELECT id FROM pdp_pipeline 
 								  WHERE save_cache_task_id IS NULL 
 									AND after_save_cache = FALSE
 									AND after_add_piece_msg = TRUE`).Scan(&did)
@@ -191,7 +191,7 @@ func (t *TaskPDPSaveCache) schedule(ctx context.Context, taskFunc harmonytask.Ad
 				return false, xerrors.Errorf("no valid deal ID found for scheduling")
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_pipeline SET save_cache_task_id = $1 WHERE id = $2 AND after_save_cache = FALSE AND after_add_piece_msg = TRUE AND save_cache_task_id IS NULL`, id, did)
+			_, err = tx.ExecI(`UPDATE pdp_pipeline SET save_cache_task_id = $1 WHERE id = $2 AND after_save_cache = FALSE AND after_add_piece_msg = TRUE AND save_cache_task_id IS NULL`, id, did)
 			if err != nil {
 				return false, xerrors.Errorf("failed to update pdp_pipeline: %w", err)
 			}

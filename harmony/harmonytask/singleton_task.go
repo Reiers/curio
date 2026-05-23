@@ -59,7 +59,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 
 			now := time.Now()
 
-			err = tx.QueryRow(`SELECT task_id, last_run_time, run_now_request FROM harmony_task_singletons WHERE task_name = $1`, taskName).Scan(&existingTaskID, &lastRunTime, &runNowRequest)
+			err = tx.QueryRowI(`SELECT task_id, last_run_time, run_now_request FROM harmony_task_singletons WHERE task_name = $1`, taskName).Scan(&existingTaskID, &lastRunTime, &runNowRequest)
 			if errors.Is(err, pgx.ErrNoRows) {
 				shouldRun = true
 			} else if err != nil {
@@ -69,7 +69,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 
 				if existingTaskID != nil {
 					var htTaskID *int64
-					err = tx.QueryRow(`SELECT id FROM harmony_task WHERE id = $1 AND name = $2`, existingTaskID, taskName).Scan(&htTaskID)
+					err = tx.QueryRowI(`SELECT id FROM harmony_task WHERE id = $1 AND name = $2`, existingTaskID, taskName).Scan(&htTaskID)
 					if errors.Is(err, pgx.ErrNoRows) {
 						taskIsRunning = false
 					} else if err != nil {
@@ -91,7 +91,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 			}
 
 			// Conditionally insert or update the task entry, clearing run_now_request
-			n, err := tx.Exec(`
+			n, err := tx.ExecI(`
                 INSERT INTO harmony_task_singletons (task_name, task_id, last_run_time, run_now_request)
 				VALUES ($1, $2, $3, FALSE)
 				ON CONFLICT (task_name) DO UPDATE

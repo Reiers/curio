@@ -89,7 +89,7 @@ var _ harmonytask.TaskInterface = &TaskChainSync{}
 // schedulers can pick them up again.
 func (t *TaskChainSync) syncStaleDeletionTaskIDs(ctx context.Context) error {
 	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		terminated, err := tx.Exec(`UPDATE pdp_delete_data_set pdds
+		terminated, err := tx.ExecI(`UPDATE pdp_delete_data_set pdds
 			SET terminate_service_task_id = NULL
 			WHERE pdds.terminate_service_task_id IS NOT NULL
 			  AND pdds.after_terminate_service = FALSE
@@ -102,7 +102,7 @@ func (t *TaskChainSync) syncStaleDeletionTaskIDs(ctx context.Context) error {
 			return false, xerrors.Errorf("failed to clear stale terminate service task ids: %w", err)
 		}
 
-		deleted, err := tx.Exec(`UPDATE pdp_delete_data_set pdds
+		deleted, err := tx.ExecI(`UPDATE pdp_delete_data_set pdds
 			SET delete_data_set_task_id = NULL
 			WHERE pdds.delete_data_set_task_id IS NOT NULL
 			  AND pdds.after_delete_data_set = FALSE
@@ -142,7 +142,7 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 		ConsecutiveFailures   int           `db:"consecutive_prove_failures"`
 		NextProveAttemptEpoch sql.NullInt64 `db:"next_prove_attempt_at"`
 	}
-	if err := t.db.Select(ctx, &dataSets, `SELECT id, prove_at_epoch, consecutive_prove_failures, next_prove_attempt_at
+	if err := t.db.SelectI(ctx, &dataSets, `SELECT id, prove_at_epoch, consecutive_prove_failures, next_prove_attempt_at
 		FROM pdp_data_sets
 		WHERE unrecoverable_proving_failure_epoch IS NULL
 		  AND (consecutive_prove_failures > 0 OR next_prove_attempt_at IS NOT NULL)
@@ -190,7 +190,7 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 			continue
 		}
 
-		updated, err := t.db.Exec(ctx, `UPDATE pdp_data_sets
+		updated, err := t.db.ExecI(ctx, `UPDATE pdp_data_sets
 			SET consecutive_prove_failures = 0,
 				next_prove_attempt_at = NULL
 			WHERE id = $1
@@ -224,7 +224,7 @@ func (t *TaskChainSync) syncFinalizedDataSetDeletionRails(ctx context.Context) e
 	var pending []struct {
 		ID int64 `db:"id"`
 	}
-	if err := t.db.Select(ctx, &pending, `SELECT id
+	if err := t.db.SelectI(ctx, &pending, `SELECT id
 		FROM pdp_delete_data_set
 		WHERE after_terminate_service = TRUE
 		  AND deletion_allowed = FALSE
@@ -298,7 +298,7 @@ func (t *TaskChainSync) syncFinalizedDataSetDeletionRails(ctx context.Context) e
 // ensureDataSetDeletion marks a terminated data set as eligible for the normal delete task once chain sync has confirmed rail finality.
 // The WHERE clause preserves idempotency and prevents this helper from moving rows that have not reached the post-terminate state.
 func (t *TaskChainSync) ensureDataSetDeletion(ctx context.Context, dataSetID int64) error {
-	n, err := t.db.Exec(ctx, `UPDATE pdp_delete_data_set
+	n, err := t.db.ExecI(ctx, `UPDATE pdp_delete_data_set
 		SET deletion_allowed = TRUE
 		WHERE id = $1
 		  AND after_terminate_service = TRUE

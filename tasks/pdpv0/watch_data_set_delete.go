@@ -36,7 +36,7 @@ func processPendingDeletes(ctx context.Context, db harmonyquery.DBInterface, eth
 		Success sql.NullBool `db:"tx_success"`
 	}
 
-	err := db.Select(ctx, &deletes, `SELECT
+	err := db.SelectI(ctx, &deletes, `SELECT
     										pdds.id,
     										pdds.delete_tx_hash,
     										mwe.tx_success
@@ -115,12 +115,12 @@ func processPendingDeletes(ctx context.Context, db harmonyquery.DBInterface, eth
 				pdp_pieceRefs will be cleaned up by watch_piece_delete.go process. It will also remove index entries and publish IPNI announcements.
 			*/
 
-			_, err = tx.Exec(`DELETE FROM pdp_data_sets WHERE id = $1`, detail.ID)
+			_, err = tx.ExecI(`DELETE FROM pdp_data_sets WHERE id = $1`, detail.ID)
 			if err != nil {
 				return false, xerrors.Errorf("failed to delete data set %d: %w", detail.ID, err)
 			}
 
-			_, err = tx.Exec(`DELETE FROM  pdp_delete_data_set WHERE id = $1 AND delete_tx_hash = $2`, detail.ID, detail.TxHash)
+			_, err = tx.ExecI(`DELETE FROM  pdp_delete_data_set WHERE id = $1 AND delete_tx_hash = $2`, detail.ID, detail.TxHash)
 			if err != nil {
 				return false, xerrors.Errorf("failed to delete row from pdp_delete_data_set: %w", err)
 			}

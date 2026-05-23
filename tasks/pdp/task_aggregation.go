@@ -52,7 +52,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 		Aggregation int    `db:"deal_aggregation"`
 	}
 
-	err = a.db.Select(ctx, &pieces, `
+	err = a.db.SelectI(ctx, &pieces, `
 										SELECT
 										    piece_cid_v2,
 											piece_ref, 
@@ -73,7 +73,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 	}
 
 	if len(pieces) == 1 {
-		n, err := a.db.Exec(ctx, `UPDATE pdp_pipeline SET aggregated = TRUE, agg_task_id = NULL 
+		n, err := a.db.ExecI(ctx, `UPDATE pdp_pipeline SET aggregated = TRUE, agg_task_id = NULL 
                                    WHERE id = $1 
                                      AND agg_task_id = $2`, pieces[0].ID, taskID)
 		if err != nil {
@@ -126,7 +126,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 		var pieceID []struct {
 			PieceID storiface.PieceNumber `db:"piece_id"`
 		}
-		err = a.db.Select(ctx, &pieceID, `SELECT piece_id FROM parked_piece_refs WHERE ref_id = $1`, piece.PieceRef)
+		err = a.db.SelectI(ctx, &pieceID, `SELECT piece_id FROM parked_piece_refs WHERE ref_id = $1`, piece.PieceRef)
 		if err != nil {
 			return false, xerrors.Errorf("getting pieceID: %w", err)
 		}
@@ -192,7 +192,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 		// Check if we already have the piece, if found then verify access and skip rest of the processing
 		var pid int64
 		var complete bool
-		err = tx.QueryRow(`SELECT id, complete FROM parked_pieces WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = TRUE`, pi.PieceCIDV1.String(), pi.Size).Scan(&pid, &complete)
+		err = tx.QueryRowI(`SELECT id, complete FROM parked_pieces WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = TRUE`, pi.PieceCIDV1.String(), pi.Size).Scan(&pid, &complete)
 		if err == nil {
 			// If piece exists then check if we can access the data
 			pr, err := a.sc.PieceReader(ctx, storiface.PieceNumber(pid))
@@ -220,7 +220,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 			}
 		}
 
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
             INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
             VALUES ($1, $2, TRUE) RETURNING ref_id
         `, parkedPieceID, "/Aggregate").Scan(&pieceRefID)
@@ -244,7 +244,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 	// TODO: Figure out if there is a race condition with cleanup task
 	defer func() {
 		if failed {
-			_, ferr := a.db.Exec(ctx, `DELETE FROM parked_piece_refs WHERE ref_id = $1`, pieceRefID)
+			_, ferr := a.db.ExecI(ctx, `DELETE FROM parked_piece_refs WHERE ref_id = $1`, pieceRefID)
 			if ferr != nil {
 				log.Errorf("failed to delete parked_piece_refs entry: %w", ferr)
 			}
@@ -269,17 +269,17 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 
 	comm, err = a.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Replace the pipeline piece with a new aggregated piece
-		_, err = tx.Exec(`DELETE FROM pdp_pipeline WHERE id = $1`, id)
+		_, err = tx.ExecI(`DELETE FROM pdp_pipeline WHERE id = $1`, id)
 		if err != nil {
 			return false, fmt.Errorf("failed to delete pipeline pieces: %w", err)
 		}
 
-		_, err = tx.Exec(`DELETE FROM parked_piece_refs WHERE ref_id = ANY($1) AND long_term = FALSE`, refIDs)
+		_, err = tx.ExecI(`DELETE FROM parked_piece_refs WHERE ref_id = ANY($1) AND long_term = FALSE`, refIDs)
 		if err != nil {
 			return false, fmt.Errorf("failed to delete parked_piece_refs entries: %w", err)
 		}
 
-		_, err = tx.Exec(`UPDATE parked_pieces SET complete = true WHERE id = $1 AND complete = FALSE`, parkedPieceID)
+		_, err = tx.ExecI(`UPDATE parked_pieces SET complete = true WHERE id = $1 AND complete = FALSE`, parkedPieceID)
 		if err != nil {
 			return false, fmt.Errorf("failed to mark piece as complete: %w", err)
 		}
@@ -287,7 +287,7 @@ func (a *AggregatePDPDealTask) Do(ctx context.Context, taskID harmonytask.TaskID
 		pdp := deal.Products.PDPV1
 		retv := deal.Products.RetrievalV1
 
-		n, err := tx.Exec(`INSERT INTO pdp_pipeline (
+		n, err := tx.ExecI(`INSERT INTO pdp_pipeline (
 									id, client, piece_cid_v2, data_set_id, extra_data, piece_ref, 
                           			downloaded, deal_aggregation, aggr_index, aggregated, indexing, announce, announce_payload, after_commp) 
 								VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, 0, TRUE, $8, $9, $10, TRUE)`,
@@ -346,7 +346,7 @@ func (a *AggregatePDPDealTask) schedule(ctx context.Context, taskFunc harmonytas
 				Count int    `db:"count"`
 			}
 
-			err := tx.Select(&deals, `SELECT id, COUNT(*) AS count
+			err := tx.SelectI(&deals, `SELECT id, COUNT(*) AS count
 										FROM pdp_pipeline
 										GROUP BY id
 										HAVING bool_and(downloaded)
@@ -365,7 +365,7 @@ func (a *AggregatePDPDealTask) schedule(ctx context.Context, taskFunc harmonytas
 			deal := deals[0]
 
 			log.Infow("processing aggregation task", "deal", deal.ID, "count", deal.Count)
-			n, err := tx.Exec(`UPDATE pdp_pipeline SET agg_task_id = $1 
+			n, err := tx.ExecI(`UPDATE pdp_pipeline SET agg_task_id = $1 
                             		WHERE id = $2 
                             		  AND downloaded = TRUE
                             		  AND after_commp = TRUE

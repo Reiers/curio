@@ -63,7 +63,7 @@ func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 			DataSetID int64 `db:"id"`
 		}
 
-		err := db.Select(ctx, &toCallNext, `
+		err := db.SelectI(ctx, &toCallNext, `
                 SELECT id
                 FROM pdp_data_set
                 WHERE challenge_request_task_id IS NULL
@@ -76,7 +76,7 @@ func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.Et
 		for _, ps := range toCallNext {
 			n.addFunc.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Update pdp_data_set to set challenge_request_task_id = id
-				affected, err := tx.Exec(`
+				affected, err := tx.ExecI(`
                         UPDATE pdp_data_set
                         SET challenge_request_task_id = $1
                         WHERE id = $2 AND challenge_request_task_id IS NULL AND removed = FALSE
@@ -104,7 +104,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	// Select the data set where challenge_request_task_id = taskID
 	var dataSetID int64
 
-	err = n.db.QueryRow(ctx, `
+	err = n.db.QueryRowI(ctx, `
         SELECT id
         FROM pdp_data_set
         WHERE challenge_request_task_id = $1 AND prove_at_epoch IS NOT NULL
@@ -192,7 +192,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	// Update the database in a transaction
 	_, err = n.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update pdp_data_set
-		affected, err := tx.Exec(`
+		affected, err := tx.ExecI(`
             UPDATE pdp_data_set
             SET challenge_request_msg_hash = $1,
                 prev_challenge_request_epoch = $2,
@@ -207,7 +207,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 		}
 
 		// Insert into message_waits_eth
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
             INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
             VALUES ($1, 'pending') ON CONFLICT DO NOTHING
         `, txHashLower)

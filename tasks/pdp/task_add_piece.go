@@ -55,7 +55,7 @@ func (p *PDPTaskAddPiece) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 		PieceRef  string `db:"piece_ref"`
 	}
 
-	err = p.db.Select(ctx, &addPieces, `SELECT id, piece_cid_v2, data_set_id, extra_data, piece_ref FROM pdp_pipeline WHERE add_piece_task_id = $1 AND after_add_piece = FALSE`, taskID)
+	err = p.db.SelectI(ctx, &addPieces, `SELECT id, piece_cid_v2, data_set_id, extra_data, piece_ref FROM pdp_pipeline WHERE add_piece_task_id = $1 AND after_add_piece = FALSE`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to select add piece: %w", err)
 	}
@@ -137,7 +137,7 @@ func (p *PDPTaskAddPiece) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 	// Insert into message_waits_eth and pdp_dataset_piece
 	_, err = p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Insert into message_waits_eth
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
           INSERT INTO message_waits_eth (signed_tx_hash, tx_status)
           VALUES ($1, $2)
       `, txHashLower, "pending")
@@ -145,7 +145,7 @@ func (p *PDPTaskAddPiece) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 			return false, xerrors.Errorf("failed to insert into message_waits_eth: %w", err)
 		}
 
-		n, err := tx.Exec(`UPDATE pdp_pipeline SET 
+		n, err := tx.ExecI(`UPDATE pdp_pipeline SET 
 								after_add_piece = TRUE, 
 								add_piece_task_id = NULL,
 								add_message_hash = $2
@@ -193,7 +193,7 @@ func (p *PDPTaskAddPiece) schedule(ctx context.Context, taskFunc harmonytask.Add
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
-			err := tx.QueryRow(`SELECT id FROM pdp_pipeline 
+			err := tx.QueryRowI(`SELECT id FROM pdp_pipeline 
 								  WHERE add_piece_task_id IS NULL 
 									AND after_add_piece = FALSE 
 									AND after_add_piece_msg = FALSE
@@ -209,7 +209,7 @@ func (p *PDPTaskAddPiece) schedule(ctx context.Context, taskFunc harmonytask.Add
 				return false, xerrors.Errorf("no valid deal ID found for scheduling")
 			}
 
-			_, err = tx.Exec(`UPDATE pdp_pipeline SET add_piece_task_id = $1 WHERE id = $2 AND after_add_piece = FALSE AND after_add_piece_msg = FALSE AND aggregated = TRUE`, id, did)
+			_, err = tx.ExecI(`UPDATE pdp_pipeline SET add_piece_task_id = $1 WHERE id = $2 AND after_add_piece = FALSE AND after_add_piece_msg = FALSE AND aggregated = TRUE`, id, did)
 			if err != nil {
 				return false, xerrors.Errorf("failed to update pdp_pipeline: %w", err)
 			}

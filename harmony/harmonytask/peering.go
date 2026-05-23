@@ -114,7 +114,7 @@ func startPeering(h *TaskEngine, peerConnector PeerConnectorInterface) *peering 
 	h.atomics.pollDuration.Store(pollRarely)
 	go func() {
 		var knownPeers []string
-		if err := p.h.cfg.db.Select(p.h.cfg.ctx, &knownPeers, `SELECT host_and_port FROM harmony_machines`); err != nil {
+		if err := p.h.cfg.db.SelectI(p.h.cfg.ctx, &knownPeers, `SELECT host_and_port FROM harmony_machines`); err != nil {
 			log.Warnw("failed to list peers", "error", err)
 			return
 		}
@@ -173,7 +173,7 @@ func (p *peering) handlePeer(peerAddr string, conn PeerConnection) {
 		ID    int64  `db:"id"`
 		Tasks string `db:"tasks"`
 	}
-	err = p.h.cfg.db.QueryRow(p.h.cfg.ctx,
+	err = p.h.cfg.db.QueryRowI(p.h.cfg.ctx,
 		`SELECT hm.id, hmd.tasks FROM harmony_machine_details hmd
 		 JOIN harmony_machines hm ON hm.id = hmd.machine_id
 		 WHERE hm.host_and_port = $1`, peerAddr).Scan(&machineDetails.ID, &machineDetails.Tasks)

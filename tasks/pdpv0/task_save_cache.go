@@ -55,7 +55,7 @@ func (t *TaskPDPSaveCache) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		RawSize  uint64 `db:"piece_raw_size"`
 	}
 
-	err = t.db.Select(ctx, &tasks, `
+	err = t.db.SelectI(ctx, &tasks, `
 		SELECT pr.id, pr.piece_cid, pp.piece_raw_size
 		FROM pdp_piecerefs pr
 		JOIN parked_piece_refs pprf ON pprf.ref_id = pr.piece_ref
@@ -71,7 +71,7 @@ func (t *TaskPDPSaveCache) Do(ctx context.Context, taskID harmonytask.TaskID, st
 
 	task := tasks[0]
 
-	n, err := t.db.Exec(ctx, `UPDATE pdp_piecerefs SET caching_task_started = NOW() WHERE id = $1 AND needs_save_cache = TRUE`, task.ID)
+	n, err := t.db.ExecI(ctx, `UPDATE pdp_piecerefs SET caching_task_started = NOW() WHERE id = $1 AND needs_save_cache = TRUE`, task.ID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to mark caching task as started: %w", err)
 	}
@@ -162,7 +162,7 @@ func (t *TaskPDPSaveCache) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	log.Debugw("PDPv0_SaveCache: marking task complete in DB", "taskID", taskID, "pieceCID", task.PieceCID)
 
 	// Mark task as completed
-	n, err = t.db.Exec(ctx, `UPDATE pdp_piecerefs SET needs_save_cache = FALSE, save_cache_task_id = NULL, caching_task_completed = NOW()
+	n, err = t.db.ExecI(ctx, `UPDATE pdp_piecerefs SET needs_save_cache = FALSE, save_cache_task_id = NULL, caching_task_completed = NOW()
 								WHERE id = $1 AND save_cache_task_id = $2`, task.ID, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("failed to update pdp_piecerefs: %w", err)
@@ -215,7 +215,7 @@ func (t *TaskPDPSaveCache) schedule(ctx context.Context, taskFunc harmonytask.Ad
 				ID int64 `db:"id"`
 			}
 
-			err := tx.Select(&pendings, `SELECT id FROM pdp_piecerefs
+			err := tx.SelectI(&pendings, `SELECT id FROM pdp_piecerefs
 				WHERE save_cache_task_id IS NULL
 				AND needs_save_cache = TRUE
 				ORDER BY created_at ASC LIMIT 1`)
@@ -228,7 +228,7 @@ func (t *TaskPDPSaveCache) schedule(ctx context.Context, taskFunc harmonytask.Ad
 			}
 
 			pending := pendings[0]
-			n, err := tx.Exec(`UPDATE pdp_piecerefs SET save_cache_task_id = $1
+			n, err := tx.ExecI(`UPDATE pdp_piecerefs SET save_cache_task_id = $1
 				WHERE save_cache_task_id IS NULL AND id = $2`, id, pending.ID)
 			if err != nil {
 				return false, xerrors.Errorf("updating save cache task id: %w", err)
@@ -249,7 +249,7 @@ func (t *TaskPDPSaveCache) scheduleMigrationCleanup(_ context.Context, taskFunc 
 	// To facilitate the migration from no-cache to cache this
 	// query bulk updates all pieces that are "need save_cache" but
 	// trivially will not populate the cache because they are too small
-	_, err := t.db.Exec(context.Background(), `
+	_, err := t.db.ExecI(context.Background(), `
             UPDATE pdp_piecerefs pr SET needs_save_cache = FALSE, caching_task_completed = NOW()
             FROM parked_piece_refs pprf
             JOIN parked_pieces pp ON pp.id = pprf.piece_id

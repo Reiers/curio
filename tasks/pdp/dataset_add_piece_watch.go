@@ -50,7 +50,7 @@ func processPendingDataSetPieceAdds(ctx context.Context, db harmonyquery.DBInter
 	// Query for pdp_dataset_piece_adds entries where add_message_ok = TRUE
 	var pieceAdds []DataSetPieceAdd
 
-	err := db.Select(ctx, &pieceAdds, `
+	err := db.SelectI(ctx, &pieceAdds, `
         SELECT id, client, piece_cid_v2, data_set_id, piece_ref, add_message_hash, add_message_index 
         FROM pdp_pipeline
         WHERE after_add_piece = TRUE AND after_add_piece_msg = FALSE
@@ -80,7 +80,7 @@ func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pi
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	var txSuccess bool
-	err := db.QueryRow(ctx, `SELECT tx_success, tx_receipt FROM message_waits_eth WHERE signed_tx_hash = $1 
+	err := db.QueryRowI(ctx, `SELECT tx_success, tx_receipt FROM message_waits_eth WHERE signed_tx_hash = $1 
                                                        AND tx_success IS NOT NULL 
                                                        AND tx_receipt IS NOT NULL`, pieceAdd.AddMessageHash).Scan(&txSuccess, &txReceiptJSON)
 	if err != nil {
@@ -102,7 +102,7 @@ func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pi
 		// This means msg failed, we should let the user know
 		// TODO: Review if error would be in receipt
 		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-			n, err := tx.Exec(`UPDATE market_mk20_deal
+			n, err := tx.ExecI(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
 													'{complete}', to_jsonb(true), true
@@ -114,7 +114,7 @@ func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pi
 			if n != 1 {
 				return false, xerrors.Errorf("expected 1 row to be updated, got %d", n)
 			}
-			_, err = tx.Exec(`DELETE FROM pdp_pipeline WHERE id = $1`, pieceAdd.ID)
+			_, err = tx.ExecI(`DELETE FROM pdp_pipeline WHERE id = $1`, pieceAdd.ID)
 			if err != nil {
 				return false, xerrors.Errorf("failed to clean up pdp pipeline: %w", err)
 			}
@@ -202,7 +202,7 @@ func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pi
 	// Insert into message_waits_eth and pdp_dataset_pieces
 	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Update data set for initialization upon first add
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			UPDATE pdp_data_set SET init_ready = true
 			WHERE id = $1 AND prev_challenge_request_epoch IS NULL AND challenge_request_msg_hash IS NULL AND prove_at_epoch IS NULL
 			`, pieceAdd.DataSet)
@@ -211,7 +211,7 @@ func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pi
 		}
 
 		// Insert into pdp_dataset_piece
-		n, err := tx.Exec(`
+		n, err := tx.ExecI(`
                   INSERT INTO pdp_dataset_piece (
                       data_set_id,
                       client,
@@ -240,7 +240,7 @@ func processDataSetPieceAdd(ctx context.Context, db harmonyquery.DBInterface, pi
 			return false, xerrors.Errorf("incorrect number of rows inserted for pdp_dataset_piece: %d", n)
 		}
 
-		n, err = tx.Exec(`UPDATE pdp_pipeline SET after_add_piece_msg = TRUE WHERE id = $1`, pieceAdd.ID)
+		n, err = tx.ExecI(`UPDATE pdp_pipeline SET after_add_piece_msg = TRUE WHERE id = $1`, pieceAdd.ID)
 		if err != nil {
 			return false, xerrors.Errorf("failed to update pdp_pipeline: %w", err)
 		}

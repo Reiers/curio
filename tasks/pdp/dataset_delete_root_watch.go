@@ -37,7 +37,7 @@ func NewWatcherPieceDelete(db harmonyquery.DBInterface, pcs *chainsched.CurioCha
 
 func processPendingDataSetPieceDeletes(ctx context.Context, db harmonyquery.DBInterface) error {
 	var dataSetPieceDeletes []DataSetPieceDelete
-	err := db.Select(ctx, &dataSetPieceDeletes, `
+	err := db.SelectI(ctx, &dataSetPieceDeletes, `
         SELECT id, tx_hash, pieces, set_id FROM pdp_piece_delete WHERE tx_hash IS NOT NULL`)
 	if err != nil {
 		return xerrors.Errorf("failed to select data set piece deletes: %w", err)
@@ -61,7 +61,7 @@ func processPendingDataSetPieceDeletes(ctx context.Context, db harmonyquery.DBIn
 func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface, psd DataSetPieceDelete) error {
 	var txReceiptJSON []byte
 	var txSuccess bool
-	err := db.QueryRow(ctx, `SELECT tx_receipt, tx_success FROM message_waits_eth WHERE signed_tx_hash = $1 
+	err := db.QueryRowI(ctx, `SELECT tx_receipt, tx_success FROM message_waits_eth WHERE signed_tx_hash = $1 
                                                        AND tx_success IS NOT NULL 
                                                        AND tx_receipt IS NOT NULL`, psd.Hash).Scan(&txReceiptJSON, &txSuccess)
 	if err != nil {
@@ -80,7 +80,7 @@ func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface,
 
 	if !txSuccess {
 		comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-			n, err := tx.Exec(`UPDATE market_mk20_deal
+			n, err := tx.ExecI(`UPDATE market_mk20_deal
 									SET pdp_v1 = jsonb_set(
 													jsonb_set(pdp_v1, '{error}', to_jsonb($1::text), true),
 													'{complete}', to_jsonb(true), true
@@ -92,7 +92,7 @@ func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface,
 			if n != 1 {
 				return false, xerrors.Errorf("expected 1 row to be updated, got %d", n)
 			}
-			_, err = tx.Exec(`DELETE FROM pdp_piece_delete WHERE id = $1`, psd.ID)
+			_, err = tx.ExecI(`DELETE FROM pdp_piece_delete WHERE id = $1`, psd.ID)
 			if err != nil {
 				return false, xerrors.Errorf("failed to delete row from pdp_piece_delete: %w", err)
 			}
@@ -108,7 +108,7 @@ func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface,
 	}
 
 	comm, err := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
-		_, err = tx.Exec(`UPDATE pdp_dataset_piece SET removed = TRUE, 
+		_, err = tx.ExecI(`UPDATE pdp_dataset_piece SET removed = TRUE, 
                          remove_deal_id = $1, 
                          remove_message_hash = $2 
                          WHERE data_set_id = $3 AND piece = ANY($4)`, psd.ID, psd.Hash, psd.DataSet, psd.Pieces)
@@ -116,7 +116,7 @@ func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface,
 			return false, xerrors.Errorf("failed to update pdp_dataset_piece: %w", err)
 		}
 
-		n, err := tx.Exec(`UPDATE market_mk20_deal
+		n, err := tx.ExecI(`UPDATE market_mk20_deal
 							SET pdp_v1 = jsonb_set(pdp_v1, '{complete}', 'true'::jsonb, true)
 							WHERE id = $1;`, psd.ID)
 		if err != nil {
@@ -125,11 +125,11 @@ func processDataSetPieceDelete(ctx context.Context, db harmonyquery.DBInterface,
 		if n != 1 {
 			return false, xerrors.Errorf("expected 1 row to be updated, got %d", n)
 		}
-		_, err = tx.Exec(`DELETE FROM pdp_piece_delete WHERE id = $1`, psd.ID)
+		_, err = tx.ExecI(`DELETE FROM pdp_piece_delete WHERE id = $1`, psd.ID)
 		if err != nil {
 			return false, xerrors.Errorf("failed to delete row from pdp_piece_delete: %w", err)
 		}
-		_, err = tx.Exec(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
+		_, err = tx.ExecI(`INSERT INTO piece_cleanup (id, piece_cid_v2, pdp, sp_id, sector_number, piece_ref)
 								SELECT p.add_deal_id, p.piece_cid_v2, TRUE, -1, -1, p.piece_ref
 								FROM pdp_dataset_piece AS p
 								WHERE p.data_set_id = $1

@@ -62,7 +62,7 @@ func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, 
 
 		// Upsert query with last_contact update, fetch the machine ID
 		// (note this isn't a simple insert .. on conflict because host_and_port isn't unique)
-		err := db.QueryRow(ctx, `
+		err := db.QueryRowI(ctx, `
 			WITH upsert AS (
 				UPDATE harmony_machines
 				SET cpu = $2, ram = $3, gpu = $4, last_contact = CURRENT_TIMESTAMP
@@ -97,7 +97,7 @@ func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, 
 			if reg.shutdown.Load() {
 				return
 			}
-			_, err := db.Exec(ctx, `UPDATE harmony_machines SET last_contact=CURRENT_TIMESTAMP where id=$1`, reg.MachineID)
+			_, err := db.ExecI(ctx, `UPDATE harmony_machines SET last_contact=CURRENT_TIMESTAMP where id=$1`, reg.MachineID)
 			if err != nil {
 				logger.Error("Cannot keepalive ", err)
 			}
@@ -110,7 +110,7 @@ func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, 
 }
 
 func CleanupMachines(ctx context.Context, db harmonyquery.DBInterface) int {
-	ct, err := db.Exec(ctx,
+	ct, err := db.ExecI(ctx,
 		`DELETE FROM harmony_machines WHERE last_contact < CURRENT_TIMESTAMP - INTERVAL '1 MILLISECOND' * $1 `,
 		LOOKS_DEAD_TIMEOUT.Milliseconds()) // ms enables unit testing to change timeout.
 	if err != nil {

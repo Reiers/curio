@@ -98,7 +98,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 					ID int64 `db:"id"`
 				}
 
-				err := tx.Select(&dataSets, `
+				err := tx.SelectI(&dataSets, `
                     SELECT p.id
                     FROM pdp_data_set p
                     INNER JOIN message_waits_eth mw on mw.signed_tx_hash = p.challenge_request_msg_hash
@@ -121,7 +121,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 				todo := dataSets[0]
 
 				// Insert a new task into pdp_proving_tasks
-				affected, err := tx.Exec(`
+				affected, err := tx.ExecI(`
                     INSERT INTO pdp_proving_tasks (data_set_id, task_id)
                     VALUES ($1, $2) ON CONFLICT DO NOTHING
                 `, todo.ID, id)
@@ -133,7 +133,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 				}
 
 				// Update pdp_data_set to set next_challenge_possible = FALSE
-				affected, err = tx.Exec(`
+				affected, err = tx.ExecI(`
                     UPDATE pdp_data_set
                     SET challenge_request_msg_hash = NULL
                     WHERE id = $1 AND challenge_request_msg_hash IS NOT NULL
@@ -169,7 +169,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 	// Retrieve proof set and challenge epoch for the task
 	var dataSetID int64
 
-	err = p.db.QueryRow(ctx, `
+	err = p.db.QueryRowI(ctx, `
         SELECT data_set_id
         FROM pdp_proving_tasks
         WHERE task_id = $1
@@ -442,7 +442,7 @@ func (p *ProveTask) proveRoot(ctx context.Context, dataSetID int64, pieceID int6
 
 	var pieceCid, dealID string
 
-	err := p.db.QueryRow(context.Background(), `SELECT piece_cid_v2, add_deal_id FROM pdp_dataset_piece WHERE data_set_id = $1 AND piece = $2`, dataSetID, pieceID).Scan(&pieceCid, &dealID)
+	err := p.db.QueryRowI(context.Background(), `SELECT piece_cid_v2, add_deal_id FROM pdp_dataset_piece WHERE data_set_id = $1 AND piece = $2`, dataSetID, pieceID).Scan(&pieceCid, &dealID)
 	if err != nil {
 		return contract.IPDPTypesProof{}, xerrors.Errorf("failed to piece cid and deal id for the piece: %w", err)
 	}
@@ -527,7 +527,7 @@ func (p *ProveTask) proveRoot(ctx context.Context, dataSetID int64, pieceID int6
 
 func (p *ProveTask) getSenderAddress(ctx context.Context, match common.Address) (common.Address, error) {
 	var addressStr string
-	err := p.db.QueryRow(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' AND address = $1 LIMIT 1`, match.Hex()).Scan(&addressStr)
+	err := p.db.QueryRowI(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' AND address = $1 LIMIT 1`, match.Hex()).Scan(&addressStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return common.Address{}, errors.New("no sender address with role 'pdp' found")
@@ -580,12 +580,12 @@ func (p *ProveTask) startSaveCache(ctx context.Context, dealID string) error {
 	pdp := deal.Products.PDPV1
 
 	var refID int64
-	err = p.db.QueryRow(ctx, `SELECT piece_ref FROM market_piece_deal WHERE id = $1 AND piece_ref IS NOT NULL`, id.String()).Scan(&refID)
+	err = p.db.QueryRowI(ctx, `SELECT piece_ref FROM market_piece_deal WHERE id = $1 AND piece_ref IS NOT NULL`, id.String()).Scan(&refID)
 	if err != nil {
 		return xerrors.Errorf("failed to get piece ref: %w", err)
 	}
 
-	_, err = p.db.Exec(ctx, `INSERT INTO pdp_pipeline (
+	_, err = p.db.ExecI(ctx, `INSERT INTO pdp_pipeline (
 									id, client, piece_cid_v2, data_set_id, extra_data, piece_ref, 
                           			downloaded, deal_aggregation, aggr_index, aggregated, indexing, announce, announce_payload, after_commp, after_add_piece, after_add_piece_msg) 
 								VALUES ($1, $2, $3, $4, $5, $6, TRUE, 0, 0, TRUE, FALSE, FALSE, FALSE, TRUE, TRUE, TRUE) ON CONFLICT(id, aggr_index) DO NOTHING`,

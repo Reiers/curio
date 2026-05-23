@@ -37,7 +37,7 @@ func processPendingTerminations(ctx context.Context, db harmonyquery.DBInterface
 		Success   sql.NullBool `db:"tx_success"`
 	}
 
-	err := db.Select(ctx, &details, `SELECT 
+	err := db.SelectI(ctx, &details, `SELECT 
     										pdds.id, 
     										pdds.terminate_tx_hash,
     										mwe.tx_success
@@ -83,7 +83,7 @@ func processPendingTerminations(ctx context.Context, db harmonyquery.DBInterface
 			return xerrors.Errorf("data set %d has no termination epoch", detail.DataSetId)
 		}
 
-		n, err := db.Exec(ctx, `UPDATE pdp_delete_data_set SET service_termination_epoch = $1 WHERE id = $2`, ds.PdpEndEpoch.Int64(), detail.DataSetId)
+		n, err := db.ExecI(ctx, `UPDATE pdp_delete_data_set SET service_termination_epoch = $1 WHERE id = $2`, ds.PdpEndEpoch.Int64(), detail.DataSetId)
 		if err != nil {
 			return xerrors.Errorf("failed to update pdp_delete_data_set: %w", err)
 		}
