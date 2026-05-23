@@ -26,7 +26,7 @@ import (
 	"github.com/filecoin-project/curio/lib/parkpiece"
 	"github.com/filecoin-project/curio/lib/paths"
 	"github.com/filecoin-project/curio/lib/promise"
-	"github.com/filecoin-project/curio/pdp"
+	"github.com/filecoin-project/curio/pdp/piececid"
 	"github.com/filecoin-project/curio/tasks/tasknames"
 )
 
@@ -244,7 +244,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	custoreURL := stashURL.String()
 
 	// Calculate padded size
-	paddedSize := pdp.PadPieceSize(item.PieceRawSize)
+	paddedSize := piececid.PadPieceSize(item.PieceRawSize)
 
 	// Create parked_pieces entry in a transaction
 	_, err = t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
