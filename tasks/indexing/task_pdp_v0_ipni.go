@@ -20,6 +20,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -37,13 +38,13 @@ const (
 )
 
 type PDPV0IPNITask struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	cfg *config.CurioConfig
 	max taskhelp.Limiter
 	idx *indexstore.IndexStore
 }
 
-func NewPDPV0IPNITask(db *harmonydb.DB, cfg *config.CurioConfig, max taskhelp.Limiter, idx *indexstore.IndexStore) *PDPV0IPNITask {
+func NewPDPV0IPNITask(db harmonyquery.DBInterface, cfg *config.CurioConfig, max taskhelp.Limiter, idx *indexstore.IndexStore) *PDPV0IPNITask {
 	return &PDPV0IPNITask{
 		db:  db,
 		cfg: cfg,
@@ -61,7 +62,7 @@ func (P *PDPV0IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		Prov     string `db:"peer_id"`
 	}
 
-	err = P.db.Select(ctx, &tasks, `
+	err = P.db.SelectI(ctx, &tasks, `
 									SELECT
 										pr.id,
 										pr.piece_cid,
@@ -87,7 +88,7 @@ func (P *PDPV0IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 	task := tasks[0]
 
 	var isRm bool
-	err = P.db.QueryRow(ctx, `SELECT is_rm FROM ipni WHERE piece_cid = $1 AND piece_size = $2 ORDER BY order_number DESC LIMIT 1`, task.PieceCID, task.Size).Scan(&isRm)
+	err = P.db.QueryRowI(ctx, `SELECT is_rm FROM ipni WHERE piece_cid = $1 AND piece_size = $2 ORDER BY order_number DESC LIMIT 1`, task.PieceCID, task.Size).Scan(&isRm)
 	exists := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, xerrors.Errorf("checking if piece is already published: %w", err)
@@ -180,15 +181,15 @@ func (P *PDPV0IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		if !stillOwned() {
 			return false, nil
 		}
-		comm, err := P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			var prev string
-			err = tx.QueryRow(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
+			err = tx.QueryRowI(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return false, xerrors.Errorf("querying previous head: %w", err)
 			}
 
 			var privKey []byte
-			err = tx.QueryRow(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, PDP_v0_SP_ID).Scan(&privKey)
+			err = tx.QueryRowI(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, PDP_v0_SP_ID).Scan(&privKey)
 			if err != nil {
 				return false, xerrors.Errorf("failed to get private ipni-libp2p key: %w", err)
 			}
@@ -252,7 +253,7 @@ func (P *PDPV0IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 			}
 
 			var inserted bool
-			err = tx.QueryRow(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			err = tx.QueryRowI(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 				ad.(cidlink.Link).Cid.String(), adv.ContextID, md, pcidV2.String(), task.PieceCID, task.Size, adv.IsRm, adv.Provider, strings.Join(adv.Addresses, "|"),
 				adv.Signature, adv.Entries.String(), nullableText(prev)).Scan(&inserted)
 			if err != nil {
@@ -282,8 +283,8 @@ func (P *PDPV0IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 	return false, xerrors.Errorf("failed to publish piece to IPNI after %d attempts", ipniHeadCASRetries)
 }
 
-func (P *PDPV0IPNITask) recordCompletion(tx *harmonydb.Tx, taskID harmonytask.TaskID, id int64) error {
-	n, err := tx.Exec(`UPDATE pdp_piecerefs SET needs_ipni = FALSE, ipni_task_id = NULL, advertisement_created_at = NOW() 
+func (P *PDPV0IPNITask) recordCompletion(tx harmonyquery.TxInterface, taskID harmonytask.TaskID, id int64) error {
+	n, err := tx.ExecI(`UPDATE pdp_piecerefs SET needs_ipni = FALSE, ipni_task_id = NULL, advertisement_created_at = NOW() 
 									WHERE id = $1 AND ipni_task_id = $2`, id, taskID) // We don't care that ad already existed, let's mark created_at as now() for new ref
 	if err != nil {
 		return xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -318,14 +319,14 @@ func (P *PDPV0IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTa
 	// schedule submits
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var pendings []struct {
 				ID int64 `db:"id"`
 			}
 
-			err := tx.Select(&pendings, `SELECT id FROM pdp_piecerefs
+			err := tx.SelectI(&pendings, `SELECT id FROM pdp_piecerefs
 												WHERE ipni_task_id IS NULL
 												AND needs_ipni = TRUE
 												ORDER BY created_at ASC LIMIT 1;`)
@@ -344,7 +345,7 @@ func (P *PDPV0IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTa
 			}
 
 			pending := pendings[0]
-			n, err := tx.Exec(`UPDATE pdp_piecerefs SET ipni_task_id = $1
+			n, err := tx.ExecI(`UPDATE pdp_piecerefs SET ipni_task_id = $1
 						 WHERE ipni_task_id IS NULL AND id = $2`, id, pending.ID)
 			if err != nil {
 				return false, xerrors.Errorf("updating PDP ipni task id: %w", err)
@@ -366,9 +367,9 @@ func (P *PDPV0IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTa
 func (P *PDPV0IPNITask) Adder(taskFunc harmonytask.AddTaskFunc) {}
 
 // The ipni provider key for pdp is at PDP_v0_SP_ID
-func PDPInitProvider(tx *harmonydb.Tx) (peer.ID, error) {
+func PDPInitProvider(tx harmonyquery.TxInterface) (peer.ID, error) {
 	var peerID string
-	err := tx.QueryRow(`SELECT peer_id FROM ipni_peerid WHERE sp_id = $1`, PDP_v0_SP_ID).Scan(&peerID)
+	err := tx.QueryRowI(`SELECT peer_id FROM ipni_peerid WHERE sp_id = $1`, PDP_v0_SP_ID).Scan(&peerID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return "", xerrors.Errorf("failed to get private libp2p key: %w", err)
@@ -391,7 +392,7 @@ func PDPInitProvider(tx *harmonydb.Tx) (peer.ID, error) {
 		}
 		peerID = pid.String()
 
-		n, err := tx.Exec(`INSERT INTO ipni_peerid (priv_key, peer_id, sp_id) VALUES ($1, $2, $3)`, privKey, peerID, PDP_v0_SP_ID)
+		n, err := tx.ExecI(`INSERT INTO ipni_peerid (priv_key, peer_id, sp_id) VALUES ($1, $2, $3)`, privKey, peerID, PDP_v0_SP_ID)
 		if err != nil {
 			return "", xerrors.Errorf("failed to insert the key into DB: %w", err)
 		}

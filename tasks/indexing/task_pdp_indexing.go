@@ -12,6 +12,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -26,7 +27,7 @@ import (
 )
 
 type PDPIndexingTask struct {
-	db                *harmonydb.DB
+	db                harmonyquery.DBInterface
 	indexStore        *indexstore.IndexStore
 	cpr               *cachedreader.CachedPieceReader
 	sc                *ffi.SealCalls
@@ -36,7 +37,7 @@ type PDPIndexingTask struct {
 	max               taskhelp.Limiter
 }
 
-func NewPDPIndexingTask(db *harmonydb.DB, sc *ffi.SealCalls, indexStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, cfg *config.CurioConfig, max taskhelp.Limiter) *PDPIndexingTask {
+func NewPDPIndexingTask(db harmonyquery.DBInterface, sc *ffi.SealCalls, indexStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader, cfg *config.CurioConfig, max taskhelp.Limiter) *PDPIndexingTask {
 
 	return &PDPIndexingTask{
 		db:                db,
@@ -59,7 +60,7 @@ func (P *PDPIndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 		Indexing   bool   `db:"indexing"`
 	}
 
-	err = P.db.Select(ctx, &tasks, `SELECT id, piece_cid_v2, piece_ref, indexing FROM pdp_pipeline WHERE indexing_task_id = $1 AND indexed = FALSE`, taskID)
+	err = P.db.SelectI(ctx, &tasks, `SELECT id, piece_cid_v2, piece_ref, indexing FROM pdp_pipeline WHERE indexing_task_id = $1 AND indexed = FALSE`, taskID)
 	if err != nil {
 		return false, xerrors.Errorf("getting PDP pending indexing tasks: %w", err)
 	}
@@ -81,7 +82,7 @@ func (P *PDPIndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 	}
 
 	var indexed bool
-	err = P.db.QueryRow(ctx, `SELECT indexed FROM market_piece_metadata WHERE piece_cid = $1 and piece_size = $2`, pi.PieceCIDV1.String(), pi.Size).Scan(&indexed)
+	err = P.db.QueryRowI(ctx, `SELECT indexed FROM market_piece_metadata WHERE piece_cid = $1 and piece_size = $2`, pi.PieceCIDV1.String(), pi.Size).Scan(&indexed)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, xerrors.Errorf("checking if piece %s is already indexed: %w", task.PieceCIDV2, err)
 	}
@@ -206,15 +207,15 @@ func (P *PDPIndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, sti
 }
 
 func (P *PDPIndexingTask) recordCompletion(ctx context.Context, taskID harmonytask.TaskID, id, PieceCID string, size, rawSize, pieceRef int64, indexed bool) error {
-	comm, err := P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
-		_, err = tx.Exec(`SELECT process_piece_deal($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+	comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		_, err = tx.ExecI(`SELECT process_piece_deal($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			id, PieceCID, false, PDP_v1_SP_ID, -1, nil, size, rawSize, indexed, pieceRef, false, 0)
 		if err != nil {
 			return false, xerrors.Errorf("failed to update piece metadata and piece deal for deal %s: %w", id, err)
 		}
 
 		if P.cfg.Market.StorageMarketConfig.IPNI.Disable {
-			n, err := tx.Exec(`UPDATE pdp_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
+			n, err := tx.ExecI(`UPDATE pdp_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
                                      complete = TRUE WHERE id = $1 AND indexing_task_id = $2`, id, taskID)
 			if err != nil {
 				return false, xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -223,7 +224,7 @@ func (P *PDPIndexingTask) recordCompletion(ctx context.Context, taskID harmonyta
 				return false, xerrors.Errorf("store indexing success: updated %d rows", n)
 			}
 		} else {
-			n, err := tx.Exec(`UPDATE pdp_pipeline SET indexed = TRUE, indexing_task_id = NULL 
+			n, err := tx.ExecI(`UPDATE pdp_pipeline SET indexed = TRUE, indexing_task_id = NULL 
                                  WHERE id = $1 AND indexing_task_id = $2`, id, taskID)
 			if err != nil {
 				return false, xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -259,7 +260,7 @@ func (P *PDPIndexingTask) CanAccept(ids []harmonytask.TaskID, engine *harmonytas
 	var resultTaskID []harmonytask.TaskID
 
 	// Single query to resolve storage locations and filter for acceptable tasks
-	err := P.db.QueryRow(ctx, `SELECT COALESCE(array_agg(s.indexing_task_id), '{}')::bigint[] AS indexing_task_ids
+	err := P.db.QueryRowI(ctx, `SELECT COALESCE(array_agg(s.indexing_task_id), '{}')::bigint[] AS indexing_task_ids
 									FROM (
 										SELECT p.indexing_task_id
 										FROM pdp_pipeline p
@@ -313,14 +314,14 @@ func (P *PDPIndexingTask) schedule(ctx context.Context, taskFunc harmonytask.Add
 	// schedule submits
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var pendings []struct {
 				ID string `db:"id"`
 			}
 
-			err := tx.Select(&pendings, `SELECT id FROM pdp_pipeline 
+			err := tx.SelectI(&pendings, `SELECT id FROM pdp_pipeline 
             										WHERE after_save_cache = TRUE
             										AND indexing_task_id IS NULL
             										AND indexed = FALSE
@@ -334,7 +335,7 @@ func (P *PDPIndexingTask) schedule(ctx context.Context, taskFunc harmonytask.Add
 			}
 
 			pending := pendings[0]
-			_, err = tx.Exec(`UPDATE pdp_pipeline SET indexing_task_id = $1 
+			_, err = tx.ExecI(`UPDATE pdp_pipeline SET indexing_task_id = $1 
                              WHERE indexing_task_id IS NULL AND id = $2`, id, pending.ID)
 			if err != nil {
 				return false, xerrors.Errorf("updating PDP indexing task id: %w", err)

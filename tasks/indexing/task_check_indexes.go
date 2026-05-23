@@ -17,6 +17,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -31,11 +32,11 @@ const CheckIndexInterval = time.Hour * 6
 var MaxOngoingIndexingTasks = 40
 
 type CheckIndexesTask struct {
-	db         *harmonydb.DB
+	db         harmonyquery.DBInterface
 	indexStore *indexstore.IndexStore
 }
 
-func NewCheckIndexesTask(db *harmonydb.DB, indexStore *indexstore.IndexStore) *CheckIndexesTask {
+func NewCheckIndexesTask(db harmonyquery.DBInterface, indexStore *indexstore.IndexStore) *CheckIndexesTask {
 	return &CheckIndexesTask{
 		db:         db,
 		indexStore: indexStore,
@@ -47,7 +48,7 @@ func (c *CheckIndexesTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	{
 		/* if market_mk12_deal_pipeline_migration has entries don't run checks */
 		var migrationCount int64
-		err = c.db.QueryRow(ctx, `SELECT COUNT(*) FROM market_mk12_deal_pipeline_migration LIMIT 1`).Scan(&migrationCount)
+		err = c.db.QueryRowI(ctx, `SELECT COUNT(*) FROM market_mk12_deal_pipeline_migration LIMIT 1`).Scan(&migrationCount)
 		if err != nil {
 			return false, xerrors.Errorf("querying migration count: %w", err)
 		}
@@ -87,7 +88,7 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 		PieceRef sql.NullInt64 `db:"piece_ref"`
 	}
 	var toCheckList []checkEntry
-	err := c.db.Select(ctx, &toCheckList, `
+	err := c.db.SelectI(ctx, &toCheckList, `
 			SELECT mm.piece_cid, mpd.piece_length, mpd.piece_offset, mpd.sp_id, mpd.sector_num, mpd.raw_size, mpd.piece_ref, mpd.id
 			FROM market_piece_metadata mm
 			LEFT JOIN market_piece_deal mpd ON mm.piece_cid = mpd.piece_cid AND mm.piece_size = mpd.piece_length
@@ -109,7 +110,7 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 
 	// Check the number of ongoing indexing tasks
 	var ongoingIndexingTasks int64
-	err = c.db.QueryRow(ctx, `SELECT
+	err = c.db.QueryRowI(ctx, `SELECT
 								  (
 									SELECT COUNT(*)
 									FROM market_mk12_deal_pipeline
@@ -196,7 +197,7 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 					CreatedAt time.Time `db:"created_at"`
 					DDO       bool      `db:"ddo"`
 				}
-				err = c.db.Select(ctx, &mk12deals, `SELECT
+				err = c.db.SelectI(ctx, &mk12deals, `SELECT
 											  uuid,
 											  sp_id,
 											  piece_cid,
@@ -244,11 +245,11 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 
 				var added bool
 
-				_, err = c.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+				_, err = c.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 					added = false
 
 					// Insert into market_mk12_deal_pipeline
-					n, err := tx.Exec(`
+					n, err := tx.ExecI(`
 								INSERT INTO market_mk12_deal_pipeline (
 									uuid, sp_id, piece_cid, piece_size, raw_size, offline, created_at,
 									sector, sector_offset, reg_seal_proof,
@@ -269,7 +270,7 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 					}
 					added = true
 
-					_, err = tx.Exec(`UPDATE market_piece_metadata SET indexed = FALSE WHERE piece_cid = $1 AND piece_size = $2`, p.PieceCID.String(), p.Size)
+					_, err = tx.ExecI(`UPDATE market_piece_metadata SET indexed = FALSE WHERE piece_cid = $1 AND piece_size = $2`, p.PieceCID.String(), p.Size)
 					if err != nil {
 						return false, xerrors.Errorf("updating market_piece_metadata.indexed column: %w", err)
 					}
@@ -325,8 +326,8 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 
 				var added bool
 
-				_, err = c.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
-					n, err := tx.Exec(`INSERT INTO market_mk20_pipeline (
+				_, err = c.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+					n, err := tx.ExecI(`INSERT INTO market_mk20_pipeline (
 									id, sp_id, contract, client, piece_cid_v2, piece_cid, piece_size, raw_size, 
                                   	offline, url, indexing, announce, duration, piece_aggregation,
                                   	started, downloaded, after_commp, aggregated, sector, reg_seal_proof, sector_offset, sealed,
@@ -345,7 +346,7 @@ func (c *CheckIndexesTask) checkIndexing(ctx context.Context, taskID harmonytask
 
 					added = true
 
-					_, err = tx.Exec(`UPDATE market_piece_metadata SET indexed = FALSE WHERE piece_cid = $1 AND piece_size = $2`, p.PieceCID.String(), p.Size)
+					_, err = tx.ExecI(`UPDATE market_piece_metadata SET indexed = FALSE WHERE piece_cid = $1 AND piece_size = $2`, p.PieceCID.String(), p.Size)
 					if err != nil {
 						return false, xerrors.Errorf("updating market_piece_metadata.indexed column: %w", err)
 					}
@@ -398,7 +399,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 		Headers   []byte         `db:"url_headers"`
 		CreatedAt time.Time      `db:"created_at"`
 	}
-	err = c.db.Select(ctx, &toCheck, `SELECT DISTINCT piece_cid, sp_id, piece_size,
+	err = c.db.SelectI(ctx, &toCheck, `SELECT DISTINCT piece_cid, sp_id, piece_size,
                 uuid, offline, url, url_headers, created_at
                 FROM market_mk12_deals WHERE fast_retrieval=true AND announce_to_ipni=true`)
 	if err != nil {
@@ -410,7 +411,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 		SpID   int64  `db:"sp_id"`
 		PeerID string `db:"peer_id"`
 	}
-	err = c.db.Select(ctx, &ipniPeerIDs, `SELECT sp_id, peer_id FROM ipni_peerid`)
+	err = c.db.SelectI(ctx, &ipniPeerIDs, `SELECT sp_id, peer_id FROM ipni_peerid`)
 	if err != nil {
 		return xerrors.Errorf("getting ipni tasks: %w", err)
 	}
@@ -422,7 +423,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 
 	// get already running pipelines with announce=true
 	var announcePiecePipelines []pieceSP
-	err = c.db.Select(ctx, &announcePiecePipelines, `SELECT piece_cid, piece_size, sp_id FROM market_mk12_deal_pipeline WHERE announce=true`)
+	err = c.db.SelectI(ctx, &announcePiecePipelines, `SELECT piece_cid, piece_size, sp_id FROM market_mk12_deal_pipeline WHERE announce=true`)
 	if err != nil {
 		return xerrors.Errorf("getting ipni tasks: %w", err)
 	}
@@ -434,7 +435,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 
 	// get ongoing ipni_task count
 	var ongoingIpniTasks int64
-	err = c.db.QueryRow(ctx, `SELECT COUNT(1) FROM ipni_task`).Scan(&ongoingIpniTasks)
+	err = c.db.QueryRowI(ctx, `SELECT COUNT(1) FROM ipni_task`).Scan(&ongoingIpniTasks)
 	if err != nil {
 		return xerrors.Errorf("getting ipni tasks: %w", err)
 	}
@@ -476,7 +477,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 		}
 
 		var hasEnt int64
-		err = c.db.QueryRow(ctx, `SELECT count(1) FROM ipni WHERE context_id=$1 AND provider=$2`, ctxId, provider).Scan(&hasEnt)
+		err = c.db.QueryRowI(ctx, `SELECT count(1) FROM ipni WHERE context_id=$1 AND provider=$2`, ctxId, provider).Scan(&hasEnt)
 		if err != nil {
 			return xerrors.Errorf("getting piece hash range: %w", err)
 		}
@@ -509,7 +510,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 			PieceOffset int64 `db:"piece_offset"`
 			RawSize     int64 `db:"raw_size"`
 		}
-		err = c.db.Select(ctx, &sourceSector, `SELECT sector_num, piece_offset, raw_size FROM market_piece_deal WHERE piece_cid=$1 AND piece_length = $2 AND sp_id = $3`, deal.PieceCID, deal.PieceSize, deal.SpID)
+		err = c.db.SelectI(ctx, &sourceSector, `SELECT sector_num, piece_offset, raw_size FROM market_piece_deal WHERE piece_cid=$1 AND piece_length = $2 AND sp_id = $3`, deal.PieceCID, deal.PieceSize, deal.SpID)
 		if err != nil {
 			return xerrors.Errorf("getting source sector: %w", err)
 		}
@@ -538,7 +539,7 @@ func (c *CheckIndexesTask) checkIPNI(ctx context.Context, taskID harmonytask.Tas
 
 		missing++
 
-		n, err := c.db.Exec(ctx, `
+		n, err := c.db.ExecI(ctx, `
 					INSERT INTO market_mk12_deal_pipeline (
 						uuid, sp_id, piece_cid, piece_size, raw_size, offline, url, headers, created_at,
 						sector, sector_offset, reg_seal_proof,
@@ -575,7 +576,7 @@ func (c *CheckIndexesTask) checkIPNIMK20(ctx context.Context, taskID harmonytask
 		ID string `db:"id"`
 	}
 
-	err = c.db.Select(ctx, &ids, `SELECT m.id
+	err = c.db.SelectI(ctx, &ids, `SELECT m.id
 									FROM market_mk20_deal AS m
 									LEFT JOIN ipni AS i
 									  ON m.piece_cid_v2 = i.piece_cid_v2
@@ -602,7 +603,7 @@ func (c *CheckIndexesTask) checkIPNIMK20(ctx context.Context, taskID harmonytask
 		SpID   int64  `db:"sp_id"`
 		PeerID string `db:"peer_id"`
 	}
-	err = c.db.Select(ctx, &ipniPeerIDs, `SELECT sp_id, peer_id FROM ipni_peerid`)
+	err = c.db.SelectI(ctx, &ipniPeerIDs, `SELECT sp_id, peer_id FROM ipni_peerid`)
 	if err != nil {
 		return xerrors.Errorf("getting ipni tasks: %w", err)
 	}
@@ -613,7 +614,7 @@ func (c *CheckIndexesTask) checkIPNIMK20(ctx context.Context, taskID harmonytask
 	}
 
 	var ongoingIpniTasks int64
-	err = c.db.QueryRow(ctx, `SELECT COUNT(1) FROM ipni_task`).Scan(&ongoingIpniTasks)
+	err = c.db.QueryRowI(ctx, `SELECT COUNT(1) FROM ipni_task`).Scan(&ongoingIpniTasks)
 	if err != nil {
 		return xerrors.Errorf("getting ipni tasks: %w", err)
 	}
@@ -665,7 +666,7 @@ func (c *CheckIndexesTask) checkIPNIMK20(ctx context.Context, taskID harmonytask
 		}
 
 		var hasEnt int64
-		err = c.db.QueryRow(ctx, `SELECT count(1) FROM ipni WHERE context_id=$1 AND provider=$2`, ctxId, provider).Scan(&hasEnt)
+		err = c.db.QueryRowI(ctx, `SELECT count(1) FROM ipni WHERE context_id=$1 AND provider=$2`, ctxId, provider).Scan(&hasEnt)
 		if err != nil {
 			return xerrors.Errorf("getting piece hash range: %w", err)
 		}
@@ -691,7 +692,7 @@ func (c *CheckIndexesTask) checkIPNIMK20(ctx context.Context, taskID harmonytask
 			RawSize     int64         `db:"raw_size"`
 			PieceRef    sql.NullInt64 `db:"piece_ref"`
 		}
-		err = c.db.Select(ctx, &sourceSector, `SELECT sector_num, piece_offset, raw_size, piece_ref FROM market_piece_deal WHERE id = $1`, id.String())
+		err = c.db.SelectI(ctx, &sourceSector, `SELECT sector_num, piece_offset, raw_size, piece_ref FROM market_piece_deal WHERE id = $1`, id.String())
 		if err != nil {
 			return xerrors.Errorf("getting source sector: %w", err)
 		}
@@ -722,7 +723,7 @@ func (c *CheckIndexesTask) checkIPNIMK20(ctx context.Context, taskID harmonytask
 			aggregation = int(data.Format.Aggregate.Type)
 		}
 
-		n, err := c.db.Exec(ctx, `INSERT INTO market_mk20_pipeline (
+		n, err := c.db.ExecI(ctx, `INSERT INTO market_mk20_pipeline (
 									id, sp_id, contract, client, piece_cid_v2, piece_cid, piece_size, raw_size, 
                                   	offline, url, indexing, announce, duration, piece_aggregation,
                                   	started, downloaded, after_commp, aggregated, sector, reg_seal_proof, sector_offset, sealed,
@@ -755,7 +756,7 @@ func (c *CheckIndexesTask) findSourceSector(ctx context.Context, spid, sectorNum
 		StorageCount int64 `db:"storage"`
 	}
 
-	err := c.db.Select(ctx, &qres, `
+	err := c.db.SelectI(ctx, &qres, `
 				SELECT sm.reg_seal_proof, COUNT(sl.storage_id) AS storage
 				FROM sectors_meta sm
 				INNER JOIN sector_location sl ON sl.sector_num = sm.sector_num AND sl.miner_id = sm.sp_id

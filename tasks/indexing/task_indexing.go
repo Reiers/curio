@@ -28,7 +28,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -46,7 +46,7 @@ import (
 var log = logging.Logger("indexing")
 
 type IndexingTask struct {
-	db                *harmonydb.DB
+	db                harmonyquery.DBInterface
 	indexStore        *indexstore.IndexStore
 	pieceProvider     *pieceprovider.SectorReader
 	cpr               *cachedreader.CachedPieceReader
@@ -62,7 +62,7 @@ type IndexingTask struct {
 	adder promise.Promise[harmonytask.AddTaskFunc]
 }
 
-func NewIndexingTask(db *harmonydb.DB, sc *ffi.SealCalls, indexStore *indexstore.IndexStore, pieceProvider *pieceprovider.SectorReader, cpr *cachedreader.CachedPieceReader, cfg *config.CurioConfig, max taskhelp.Limiter) *IndexingTask {
+func NewIndexingTask(db harmonyquery.DBInterface, sc *ffi.SealCalls, indexStore *indexstore.IndexStore, pieceProvider *pieceprovider.SectorReader, cpr *cachedreader.CachedPieceReader, cfg *config.CurioConfig, max taskhelp.Limiter) *IndexingTask {
 
 	return &IndexingTask{
 		db:                db,
@@ -105,7 +105,7 @@ func (i *IndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 
 	var tasks []itask
 
-	err = i.db.Select(ctx, &tasks, `SELECT 
+	err = i.db.SelectI(ctx, &tasks, `SELECT 
 										  p.uuid, 
 										  p.sp_id, 
 										  p.sector,
@@ -165,7 +165,7 @@ func (i *IndexingTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillO
 
 	// Check if piece is already indexed
 	var indexed bool
-	err = i.db.QueryRow(ctx, `SELECT indexed FROM market_piece_metadata WHERE piece_cid = $1 and piece_size = $2`, task.PieceCid, task.Size).Scan(&indexed)
+	err = i.db.QueryRowI(ctx, `SELECT indexed FROM market_piece_metadata WHERE piece_cid = $1 and piece_size = $2`, task.PieceCid, task.Size).Scan(&indexed)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, xerrors.Errorf("checking if piece %s is already indexed: %w", task.PieceCid, err)
 	}
@@ -599,13 +599,13 @@ func (i *IndexingTask) recordCompletion(ctx context.Context, task itask, taskID 
 	rawSize := task.RawSize.Int64
 
 	if task.Mk20 {
-		_, err := i.db.Exec(ctx, `SELECT process_piece_deal($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		_, err := i.db.ExecI(ctx, `SELECT process_piece_deal($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			task.UUID, task.PieceCid, !task.IsDDO, task.SpID, task.Sector, task.Offset, task.Size, rawSize, indexed, task.PieceRef, false, task.ChainDealId)
 		if err != nil {
 			return xerrors.Errorf("failed to update piece metadata and piece deal for deal %s: %w", task.UUID, err)
 		}
 	} else {
-		_, err := i.db.Exec(ctx, `SELECT process_piece_deal($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		_, err := i.db.ExecI(ctx, `SELECT process_piece_deal($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 			task.UUID, task.PieceCid, !task.IsDDO, task.SpID, task.Sector, task.Offset, task.Size, rawSize, indexed, nil, false, task.ChainDealId)
 		if err != nil {
 			return xerrors.Errorf("failed to update piece metadata and piece deal for deal %s: %w", task.UUID, err)
@@ -631,7 +631,7 @@ func (i *IndexingTask) recordCompletion(ctx context.Context, task itask, taskID 
 
 	if skipIPNI {
 		if task.Mk20 {
-			n, err := i.db.Exec(ctx, `UPDATE market_mk20_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
+			n, err := i.db.ExecI(ctx, `UPDATE market_mk20_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
                                      complete = TRUE WHERE id = $1 AND indexing_task_id = $2`, task.UUID, taskID)
 			if err != nil {
 				return xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -640,7 +640,7 @@ func (i *IndexingTask) recordCompletion(ctx context.Context, task itask, taskID 
 				return xerrors.Errorf("store indexing success: updated %d rows", n)
 			}
 		} else {
-			n, err := i.db.Exec(ctx, `UPDATE market_mk12_deal_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
+			n, err := i.db.ExecI(ctx, `UPDATE market_mk12_deal_pipeline SET indexed = TRUE, indexing_task_id = NULL, 
                                      complete = TRUE WHERE uuid = $1 AND indexing_task_id = $2`, task.UUID, taskID)
 			if err != nil {
 				return xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -651,7 +651,7 @@ func (i *IndexingTask) recordCompletion(ctx context.Context, task itask, taskID 
 		}
 	} else {
 		if task.Mk20 {
-			n, err := i.db.Exec(ctx, `UPDATE market_mk20_pipeline SET indexed = TRUE, indexing_task_id = NULL 
+			n, err := i.db.ExecI(ctx, `UPDATE market_mk20_pipeline SET indexed = TRUE, indexing_task_id = NULL 
                                  WHERE id = $1 AND indexing_task_id = $2`, task.UUID, taskID)
 			if err != nil {
 				return xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -660,7 +660,7 @@ func (i *IndexingTask) recordCompletion(ctx context.Context, task itask, taskID 
 				return xerrors.Errorf("store indexing success: updated %d rows", n)
 			}
 		} else {
-			n, err := i.db.Exec(ctx, `UPDATE market_mk12_deal_pipeline SET indexed = TRUE, indexing_task_id = NULL 
+			n, err := i.db.ExecI(ctx, `UPDATE market_mk12_deal_pipeline SET indexed = TRUE, indexing_task_id = NULL 
                                  WHERE uuid = $1 AND indexing_task_id = $2`, task.UUID, taskID)
 			if err != nil {
 				return xerrors.Errorf("store indexing success: updating pipeline: %w", err)
@@ -695,7 +695,7 @@ func (i *IndexingTask) CanAccept(ids []harmonytask.TaskID, engine *harmonytask.T
 	// Query MK20 table and get piece_ref, then join with parked_piece_refs to get piece_id and finally join with sector_location to get storage_id
 	// Query MK12 table and get sector_id, then join with sector_location to get storage_id
 	// Create a Union All query to get the first task that is either DOES NOT require indexing or has a storage_id that is in the local storage
-	err := i.db.QueryRow(ctx, `SELECT COALESCE(array_agg(s.indexing_task_id), '{}')::bigint[] AS indexing_task_ids FROM 
+	err := i.db.QueryRowI(ctx, `SELECT COALESCE(array_agg(s.indexing_task_id), '{}')::bigint[] AS indexing_task_ids FROM 
 			(
 				SELECT indexing_task_id
 				FROM (
@@ -764,7 +764,7 @@ func (i *IndexingTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 	// schedule submits
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var mk12Pendings []struct {
@@ -774,7 +774,7 @@ func (i *IndexingTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 			// Indexing job must be created for every deal to make sure piece details are inserted in DB
 			// even if we don't want to index it. If piece is not supposed to be indexed then it will handled
 			// by the Do()
-			err := tx.Select(&mk12Pendings, `SELECT uuid FROM market_mk12_deal_pipeline 
+			err := tx.SelectI(&mk12Pendings, `SELECT uuid FROM market_mk12_deal_pipeline 
             										WHERE sealed = TRUE
             										AND indexing_task_id IS NULL
             										AND indexed = FALSE
@@ -787,7 +787,7 @@ func (i *IndexingTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 			if len(mk12Pendings) > 0 {
 				pending := mk12Pendings[0]
 
-				_, err = tx.Exec(`UPDATE market_mk12_deal_pipeline SET indexing_task_id = $1 
+				_, err = tx.ExecI(`UPDATE market_mk12_deal_pipeline SET indexing_task_id = $1 
                              WHERE indexing_task_id IS NULL AND uuid = $2`, id, pending.UUID)
 				if err != nil {
 					return false, xerrors.Errorf("updating mk12 indexing task id: %w", err)
@@ -801,7 +801,7 @@ func (i *IndexingTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 				UUID string `db:"id"`
 			}
 
-			err = tx.Select(&mk20Pendings, `SELECT id FROM market_mk20_pipeline 
+			err = tx.SelectI(&mk20Pendings, `SELECT id FROM market_mk20_pipeline 
             										WHERE sealed = TRUE
             										AND indexing_task_id IS NULL
             										AND indexed = FALSE
@@ -816,7 +816,7 @@ func (i *IndexingTask) schedule(ctx context.Context, taskFunc harmonytask.AddTas
 			}
 
 			pending := mk20Pendings[0]
-			_, err = tx.Exec(`UPDATE market_mk20_pipeline SET indexing_task_id = $1 
+			_, err = tx.ExecI(`UPDATE market_mk20_pipeline SET indexing_task_id = $1 
                              WHERE indexing_task_id IS NULL AND id = $2`, id, pending.UUID)
 			if err != nil {
 				return false, xerrors.Errorf("updating mk20 indexing task id: %w", err)
@@ -851,9 +851,9 @@ func (i *IndexingTask) Wake() {
 	}
 }
 
-func (i *IndexingTask) GetSpid(db *harmonydb.DB, taskID int64) string {
+func (i *IndexingTask) GetSpid(db harmonyquery.DBInterface, taskID int64) string {
 	var spid string
-	err := db.QueryRow(context.Background(), `SELECT sp_id FROM market_mk12_deal_pipeline WHERE indexing_task_id = $1
+	err := db.QueryRowI(context.Background(), `SELECT sp_id FROM market_mk12_deal_pipeline WHERE indexing_task_id = $1
 													UNION ALL
 													SELECT sp_id FROM market_mk20_pipeline WHERE indexing_task_id = $1`, taskID).Scan(&spid)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"github.com/filecoin-project/go-padreader"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -39,13 +40,13 @@ import (
 const PDP_v1_SP_ID = -1
 
 type PDPIPNITask struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	cfg *config.CurioConfig
 	max taskhelp.Limiter
 	idx *indexstore.IndexStore
 }
 
-func NewPDPIPNITask(db *harmonydb.DB, cfg *config.CurioConfig, max taskhelp.Limiter, idx *indexstore.IndexStore) *PDPIPNITask {
+func NewPDPIPNITask(db harmonyquery.DBInterface, cfg *config.CurioConfig, max taskhelp.Limiter, idx *indexstore.IndexStore) *PDPIPNITask {
 	return &PDPIPNITask{
 		db:  db,
 		cfg: cfg,
@@ -64,7 +65,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		Complete bool   `db:"complete"`
 	}
 
-	err = P.db.Select(ctx, &tasks, `SELECT 
+	err = P.db.SelectI(ctx, &tasks, `SELECT 
 											id,
 											context_id,
 											is_rm,
@@ -98,7 +99,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 			if !stillOwned() {
 				return false, nil
 			}
-			comm, err := P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+			comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 				var ads []struct {
 					ContextID []byte `db:"context_id"`
 					IsRm      bool   `db:"is_rm"`
@@ -112,7 +113,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				}
 
 				// Get the latest Ad
-				err = tx.Select(&ads, `SELECT 
+				err = tx.SelectI(&ads, `SELECT 
 										context_id,
 										is_rm, 
 										previous, 
@@ -144,7 +145,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 
 				var prev string
 
-				err = tx.QueryRow(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
+				err = tx.QueryRowI(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return false, xerrors.Errorf("querying previous head: %w", err)
 				}
@@ -155,7 +156,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				}
 
 				var privKey []byte
-				err = tx.QueryRow(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, PDP_v1_SP_ID).Scan(&privKey)
+				err = tx.QueryRowI(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, PDP_v1_SP_ID).Scan(&privKey)
 				if err != nil {
 					return false, xerrors.Errorf("failed to get private ipni-libp2p key for PDP: %w", err)
 				}
@@ -196,7 +197,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				}
 
 				var inserted bool
-				err = tx.QueryRow(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+				err = tx.QueryRowI(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 					ad.(cidlink.Link).Cid.String(), adv.ContextID, a.Metadata, a.Pcid2, a.Pcid1, a.Size, adv.IsRm, adv.Provider, strings.Join(adv.Addresses, "|"),
 					adv.Signature, adv.Entries.String(), nullableText(prev)).Scan(&inserted)
 				if err != nil {
@@ -206,7 +207,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 					return false, nil
 				}
 
-				n, err := tx.Exec(`UPDATE pdp_ipni_task SET complete = true WHERE task_id = $1`, taskID)
+				n, err := tx.ExecI(`UPDATE pdp_ipni_task SET complete = true WHERE task_id = $1`, taskID)
 				if err != nil {
 					return false, xerrors.Errorf("failed to mark IPNI task complete: %w", err)
 				}
@@ -309,9 +310,9 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		if !stillOwned() {
 			return false, nil
 		}
-		comm, err := P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			var prev string
-			err = tx.QueryRow(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
+			err = tx.QueryRowI(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return false, xerrors.Errorf("querying previous head: %w", err)
 			}
@@ -334,7 +335,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 			}
 
 			var privKey []byte
-			err = tx.QueryRow(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, PDP_v1_SP_ID).Scan(&privKey)
+			err = tx.QueryRowI(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, PDP_v1_SP_ID).Scan(&privKey)
 			if err != nil {
 				return false, xerrors.Errorf("failed to get private ipni-libp2p key for PDP: %w", err)
 			}
@@ -396,7 +397,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 			}
 
 			var inserted bool
-			err = tx.QueryRow(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			err = tx.QueryRowI(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 				ad.(cidlink.Link).Cid.String(), adv.ContextID, md, pcid2.String(), pieceCid.String(), size, adv.IsRm, adv.Provider, strings.Join(adv.Addresses, "|"),
 				adv.Signature, adv.Entries.String(), nullableText(prev)).Scan(&inserted)
 			if err != nil {
@@ -406,7 +407,7 @@ func (P *PDPIPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 				return false, nil
 			}
 
-			n, err := tx.Exec(`UPDATE pdp_ipni_task SET complete = true WHERE task_id = $1`, taskID)
+			n, err := tx.ExecI(`UPDATE pdp_ipni_task SET complete = true WHERE task_id = $1`, taskID)
 			if err != nil {
 				return false, xerrors.Errorf("failed to mark IPNI task complete: %w", err)
 			}
@@ -459,7 +460,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 		var markComplete, markCompletePayload, complete *string
 		var isRm bool
 
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var pendings []struct {
@@ -472,7 +473,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 				AnnouncedPayload bool   `db:"announced_payload"`
 			}
 
-			err := tx.Select(&pendings, `WITH unioned AS (
+			err := tx.SelectI(&pendings, `WITH unioned AS (
 											  SELECT
 												dp.id,
 												dp.piece_cid_v2,
@@ -524,7 +525,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 
 			var privKey []byte
 			var peerIDStr string
-			err = tx.QueryRow(`SELECT priv_key, peer_id FROM ipni_peerid WHERE sp_id = $1`, PDP_v1_SP_ID).Scan(&privKey, &peerIDStr)
+			err = tx.QueryRowI(`SELECT priv_key, peer_id FROM ipni_peerid WHERE sp_id = $1`, PDP_v1_SP_ID).Scan(&privKey, &peerIDStr)
 			if err != nil {
 				if !errors.Is(err, pgx.ErrNoRows) {
 					return false, xerrors.Errorf("failed to get private libp2p key for PDP: %w", err)
@@ -546,7 +547,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 					return false, xerrors.Errorf("getting peer ID: %w", err)
 				}
 
-				n, err := tx.Exec(`INSERT INTO ipni_peerid (sp_id, priv_key, peer_id) VALUES ($1, $2, $3) ON CONFLICT(sp_id) DO NOTHING `, PDP_v1_SP_ID, privKey, pid.String())
+				n, err := tx.ExecI(`INSERT INTO ipni_peerid (sp_id, priv_key, peer_id) VALUES ($1, $2, $3) ON CONFLICT(sp_id) DO NOTHING `, PDP_v1_SP_ID, privKey, pid.String())
 				if err != nil {
 					return false, xerrors.Errorf("failed to insert the key into DB: %w", err)
 				}
@@ -580,7 +581,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 					return false, xerrors.Errorf("marshaling piece info: %w", err)
 				}
 
-				_, err = tx.Exec(`SELECT insert_pdp_ipni_task($1, $2, $3, $4, $5)`, iContext, p.IsRM, p.ID, pid.String(), id)
+				_, err = tx.ExecI(`SELECT insert_pdp_ipni_task($1, $2, $3, $4, $5)`, iContext, p.IsRM, p.ID, pid.String(), id)
 				if err != nil {
 					if harmonydb.IsErrUniqueContraint(err) {
 						ilog.Infof("Another IPNI announce task already present for piece %s and payload %d with RM %t in deal %s", p.PieceCid, p.AnnouncePayload, p.IsRM, p.ID)
@@ -626,7 +627,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 					return false, xerrors.Errorf("marshaling piece info: %w", err)
 				}
 
-				_, err = tx.Exec(`SELECT insert_pdp_ipni_task($1, $2, $3, $4, $5)`, iContext, p.IsRM, p.ID, pid.String(), id)
+				_, err = tx.ExecI(`SELECT insert_pdp_ipni_task($1, $2, $3, $4, $5)`, iContext, p.IsRM, p.ID, pid.String(), id)
 				if err != nil {
 					if harmonydb.IsErrUniqueContraint(err) {
 						ilog.Infof("Another IPNI announce task already present for piece %s and payload %d with RM %t in deal %s", p.PieceCid, p.AnnouncePayload, p.IsRM, p.ID)
@@ -669,9 +670,9 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 			var n int
 			var err error
 			if isRm {
-				n, err = P.db.Exec(ctx, `UPDATE piece_cleanup SET announced = TRUE WHERE id = $1`, *markComplete)
+				n, err = P.db.ExecI(ctx, `UPDATE piece_cleanup SET announced = TRUE WHERE id = $1`, *markComplete)
 			} else {
-				n, err = P.db.Exec(ctx, `UPDATE pdp_pipeline SET announced = TRUE WHERE id = $1`, *markComplete)
+				n, err = P.db.ExecI(ctx, `UPDATE pdp_pipeline SET announced = TRUE WHERE id = $1`, *markComplete)
 			}
 
 			if err != nil {
@@ -686,9 +687,9 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 			var n int
 			var err error
 			if isRm {
-				n, err = P.db.Exec(ctx, `UPDATE piece_cleanup SET announced_payload = TRUE WHERE id = $1`, *markCompletePayload)
+				n, err = P.db.ExecI(ctx, `UPDATE piece_cleanup SET announced_payload = TRUE WHERE id = $1`, *markCompletePayload)
 			} else {
-				n, err = P.db.Exec(ctx, `UPDATE pdp_pipeline SET announced_payload = TRUE WHERE id = $1`, *markCompletePayload)
+				n, err = P.db.ExecI(ctx, `UPDATE pdp_pipeline SET announced_payload = TRUE WHERE id = $1`, *markCompletePayload)
 			}
 			if err != nil {
 				ilog.Errorf("store IPNI success: updating pipeline: %w", err)
@@ -699,9 +700,9 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 		}
 
 		if complete != nil {
-			comm, err := P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+			comm, err := P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 				if isRm {
-					n, err := tx.Exec(`UPDATE piece_cleanup SET complete = TRUE WHERE id = $1`, *complete)
+					n, err := tx.ExecI(`UPDATE piece_cleanup SET complete = TRUE WHERE id = $1`, *complete)
 					if err != nil {
 						return false, xerrors.Errorf("updating piece cleanup pipeline: %w", err)
 					}
@@ -710,7 +711,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 					}
 					return true, nil
 				}
-				n, err := tx.Exec(`UPDATE pdp_pipeline SET complete = TRUE WHERE id = $1`, *complete)
+				n, err := tx.ExecI(`UPDATE pdp_pipeline SET complete = TRUE WHERE id = $1`, *complete)
 
 				if err != nil {
 					return false, xerrors.Errorf("updating pipeline: %w", err)
@@ -719,7 +720,7 @@ func (P *PDPIPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTask
 					return false, xerrors.Errorf("expected to update 1 row but updated %d rows", n)
 				}
 
-				n, err = tx.Exec(`UPDATE market_mk20_deal
+				n, err = tx.ExecI(`UPDATE market_mk20_deal
 							SET pdp_v1 = jsonb_set(pdp_v1, '{complete}', 'true'::jsonb, true)
 							WHERE id = $1;`, *complete)
 				if err != nil {

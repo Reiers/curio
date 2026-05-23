@@ -25,6 +25,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -43,7 +44,7 @@ var ilog = logging.Logger("ipni")
 const ipniHeadCASRetries = 16
 
 type IPNITask struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	cfg *config.CurioConfig
 	max taskhelp.Limiter
 	idx *indexstore.IndexStore
@@ -61,7 +62,7 @@ func nullableText(v string) any {
 	return v
 }
 
-func NewIPNITask(db *harmonydb.DB, cfg *config.CurioConfig, max taskhelp.Limiter, idx *indexstore.IndexStore) *IPNITask {
+func NewIPNITask(db harmonyquery.DBInterface, cfg *config.CurioConfig, max taskhelp.Limiter, idx *indexstore.IndexStore) *IPNITask {
 	return &IPNITask{
 		db:  db,
 		cfg: cfg,
@@ -84,7 +85,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 		Complete bool                    `db:"complete"`
 	}
 
-	err = I.db.Select(ctx, &tasks, `SELECT 
+	err = I.db.SelectI(ctx, &tasks, `SELECT 
 											sp_id,
 											id,
 											sector, 
@@ -122,7 +123,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 			if !stillOwned() {
 				return false, nil
 			}
-			comm, err := I.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+			comm, err := I.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 				var ads []struct {
 					ContextID []byte `db:"context_id"`
 					IsRm      bool   `db:"is_rm"`
@@ -136,7 +137,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 				}
 
 				// Get the latest Ad
-				err = tx.Select(&ads, `SELECT 
+				err = tx.SelectI(&ads, `SELECT 
 										context_id,
 										is_rm, 
 										previous, 
@@ -168,13 +169,13 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 
 				var prev string
 
-				err = tx.QueryRow(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
+				err = tx.QueryRowI(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return false, xerrors.Errorf("querying previous head: %w", err)
 				}
 
 				var privKey []byte
-				err = tx.QueryRow(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, task.SPID).Scan(&privKey)
+				err = tx.QueryRowI(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, task.SPID).Scan(&privKey)
 				if err != nil {
 					return false, xerrors.Errorf("failed to get private ipni-libp2p key for PDP: %w", err)
 				}
@@ -220,7 +221,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 				}
 
 				var inserted bool
-				err = tx.QueryRow(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+				err = tx.QueryRowI(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 					ad.(cidlink.Link).Cid.String(), adv.ContextID, a.Metadata, a.Pcid2, a.Pcid1, a.Size, adv.IsRm, adv.Provider, strings.Join(adv.Addresses, "|"),
 					adv.Signature, adv.Entries.String(), nullableText(prev)).Scan(&inserted)
 				if err != nil {
@@ -230,7 +231,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 					return false, nil
 				}
 
-				n, err := tx.Exec(`UPDATE ipni_task SET complete = true WHERE task_id = $1`, taskID)
+				n, err := tx.ExecI(`UPDATE ipni_task SET complete = true WHERE task_id = $1`, taskID)
 				if err != nil {
 					return false, xerrors.Errorf("failed to mark IPNI task complete: %w", err)
 				}
@@ -259,9 +260,9 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 
 	var rawSize abi.UnpaddedPieceSize
 	if task.ID.Valid {
-		err = I.db.QueryRow(ctx, `SELECT raw_size FROM market_piece_deal WHERE piece_cid = $1 AND piece_length = $2 AND id = $3 LIMIT 1`, pi.PieceCID.String(), pi.Size, task.ID.String).Scan(&rawSize)
+		err = I.db.QueryRowI(ctx, `SELECT raw_size FROM market_piece_deal WHERE piece_cid = $1 AND piece_length = $2 AND id = $3 LIMIT 1`, pi.PieceCID.String(), pi.Size, task.ID.String).Scan(&rawSize)
 	} else {
-		err = I.db.QueryRow(ctx, `SELECT raw_size FROM market_piece_deal WHERE piece_cid = $1 AND piece_length = $2 LIMIT 1`, pi.PieceCID.String(), pi.Size).Scan(&rawSize)
+		err = I.db.QueryRowI(ctx, `SELECT raw_size FROM market_piece_deal WHERE piece_cid = $1 AND piece_length = $2 LIMIT 1`, pi.PieceCID.String(), pi.Size).Scan(&rawSize)
 		if rawSize == 0 {
 			return false, xerrors.Errorf("piece raw size %d not found in market_piece_deal", pi.Size)
 		}
@@ -328,9 +329,9 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 		if !stillOwned() {
 			return false, nil
 		}
-		comm, err := I.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		comm, err := I.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			var prev string
-			err = tx.QueryRow(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
+			err = tx.QueryRowI(`SELECT head FROM ipni_head WHERE provider = $1`, task.Prov).Scan(&prev)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return false, xerrors.Errorf("querying previous head: %w", err)
 			}
@@ -342,7 +343,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 			}
 
 			var privKey []byte
-			err = tx.QueryRow(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, task.SPID).Scan(&privKey)
+			err = tx.QueryRowI(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, task.SPID).Scan(&privKey)
 			if err != nil {
 				return false, xerrors.Errorf("failed to get private ipni-libp2p key for miner %d: %w", task.SPID, err)
 			}
@@ -404,7 +405,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 			}
 
 			var inserted bool
-			err = tx.QueryRow(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			err = tx.QueryRowI(`SELECT insert_ad_and_update_head_checked($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 				ad.(cidlink.Link).Cid.String(), adv.ContextID, md, pcid2.String(), pi.PieceCID.String(), pi.Size, adv.IsRm, adv.Provider, strings.Join(adv.Addresses, "|"),
 				adv.Signature, adv.Entries.String(), nullableText(prev)).Scan(&inserted)
 			if err != nil {
@@ -414,7 +415,7 @@ func (I *IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 				return false, nil
 			}
 
-			n, err := tx.Exec(`UPDATE ipni_task SET complete = true WHERE task_id = $1`, taskID)
+			n, err := tx.ExecI(`UPDATE ipni_task SET complete = true WHERE task_id = $1`, taskID)
 			if err != nil {
 				return false, xerrors.Errorf("failed to mark IPNI task complete: %w", err)
 			}
@@ -470,12 +471,12 @@ func (I *IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFun
 		var markComplete *string
 		var mk20, isRM bool
 
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var pendings []itask
 
-			err := tx.Select(&pendings, `WITH unioned AS (
+			err := tx.SelectI(&pendings, `WITH unioned AS (
 												SELECT
 												  uuid, 
 												  sp_id, 
@@ -561,7 +562,7 @@ func (I *IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFun
 			}
 
 			var privKey []byte
-			err = tx.QueryRow(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, p.SpID).Scan(&privKey)
+			err = tx.QueryRowI(`SELECT priv_key FROM ipni_peerid WHERE sp_id = $1`, p.SpID).Scan(&privKey)
 			if err != nil {
 				if !errors.Is(err, pgx.ErrNoRows) {
 					return false, xerrors.Errorf("failed to get private libp2p key for miner %d: %w", p.SpID, err)
@@ -583,7 +584,7 @@ func (I *IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFun
 					return false, xerrors.Errorf("getting peer ID: %w", err)
 				}
 
-				n, err := tx.Exec(`INSERT INTO ipni_peerid (sp_id, priv_key, peer_id) VALUES ($1, $2, $3) ON CONFLICT(sp_id) DO NOTHING `, p.SpID, privKey, pid.String())
+				n, err := tx.ExecI(`INSERT INTO ipni_peerid (sp_id, priv_key, peer_id) VALUES ($1, $2, $3) ON CONFLICT(sp_id) DO NOTHING `, p.SpID, privKey, pid.String())
 				if err != nil {
 					return false, xerrors.Errorf("failed to insert the key into DB: %w", err)
 				}
@@ -619,7 +620,7 @@ func (I *IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFun
 				return false, xerrors.Errorf("marshaling piece info: %w", err)
 			}
 
-			_, err = tx.Exec(`SELECT insert_ipni_task($1, $2, $3, $4, $5, $6, $7, $8, $9)`, p.UUID, p.SpID,
+			_, err = tx.ExecI(`SELECT insert_ipni_task($1, $2, $3, $4, $5, $6, $7, $8, $9)`, p.UUID, p.SpID,
 				p.Sector, p.Proof, p.Offset, b.Bytes(), p.IsRM, pid.String(), id)
 			if err != nil {
 				if harmonydb.IsErrUniqueContraint(err) {
@@ -654,12 +655,12 @@ func (I *IPNITask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFun
 			var n int
 			var err error
 			if isRM {
-				n, err = I.db.Exec(ctx, `UPDATE piece_cleanup SET complete = TRUE WHERE id = $1 AND complete = FALSE`, *markComplete)
+				n, err = I.db.ExecI(ctx, `UPDATE piece_cleanup SET complete = TRUE WHERE id = $1 AND complete = FALSE`, *markComplete)
 			} else {
 				if mk20 {
-					n, err = I.db.Exec(ctx, `UPDATE market_mk20_pipeline SET complete = TRUE WHERE id = $1 AND complete = FALSE`, *markComplete)
+					n, err = I.db.ExecI(ctx, `UPDATE market_mk20_pipeline SET complete = TRUE WHERE id = $1 AND complete = FALSE`, *markComplete)
 				} else {
-					n, err = I.db.Exec(ctx, `UPDATE market_mk12_deal_pipeline SET complete = TRUE WHERE uuid = $1 AND complete = FALSE`, *markComplete)
+					n, err = I.db.ExecI(ctx, `UPDATE market_mk12_deal_pipeline SET complete = TRUE WHERE uuid = $1 AND complete = FALSE`, *markComplete)
 				}
 			}
 
@@ -696,9 +697,9 @@ func (I *IPNITask) Wake() {
 	}
 }
 
-func (I *IPNITask) GetSpid(db *harmonydb.DB, taskID int64) string {
+func (I *IPNITask) GetSpid(db harmonyquery.DBInterface, taskID int64) string {
 	var spid string
-	err := db.QueryRow(context.Background(), `SELECT sp_id FROM ipni_task WHERE task_id = $1`, taskID).Scan(&spid)
+	err := db.QueryRowI(context.Background(), `SELECT sp_id FROM ipni_task WHERE task_id = $1`, taskID).Scan(&spid)
 	if err != nil {
 		ilog.Errorf("getting spid: %s", err)
 		return ""
