@@ -85,7 +85,10 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 		err = tx.QueryRowI(`
             SELECT id FROM parked_pieces WHERE piece_cid = $1 AND long_term = TRUE AND complete = TRUE
         `, pieceCidV1.String()).Scan(&parkedPieceID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		// pgx.ErrNoRows on Postgres, sql.ErrNoRows on SQLite, or the literal
+		// 'sql: no rows in result set' text — all mean 'no existing piece,
+		// proceed to the create-upload path.'
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, sql.ErrNoRows) && err.Error() != "sql: no rows in result set" {
 			return false, fmt.Errorf("failed to query parked_pieces: %w", err)
 		}
 		log.Debugw("[handlePiecePost] -- parked piece check done", "pieceCidV2", pieceCidV2)
