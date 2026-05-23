@@ -36,7 +36,7 @@ import (
 
 func (m *MK20) HandleUploadStatus(ctx context.Context, id ulid.ULID, w http.ResponseWriter) {
 	var exists bool
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (
 									  SELECT 1
 									  FROM market_mk20_upload_waiting
 									  WHERE id = $1
@@ -54,7 +54,7 @@ func (m *MK20) HandleUploadStatus(ctx context.Context, id ulid.ULID, w http.Resp
 
 	var ret UploadStatus
 
-	err = m.DB.QueryRow(ctx, `SELECT
+	err = m.DB.QueryRowI(ctx, `SELECT
 								  COUNT(*) AS total,
 								  COUNT(*) FILTER (WHERE complete) AS complete,
 								  COUNT(*) FILTER (WHERE NOT complete) AS missing,
@@ -140,7 +140,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 	// Check if deal exists
 	var exists bool
 
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (
 								  SELECT 1
 								  FROM market_mk20_upload_waiting
 								  WHERE id = $1 AND chunked IS NULL);`, id.String()).Scan(&exists)
@@ -156,7 +156,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 
 	// Check if we already started the upload
 	var started bool
-	err = m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err = m.DB.QueryRowI(ctx, `SELECT EXISTS (
 									SELECT 1 
 									FROM market_mk20_deal_chunk 
 									WHERE id = $1);`, id.String()).Scan(&started)
@@ -197,7 +197,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 	numChunks := int(math.Ceil(float64(upload.RawSize) / float64(chunkSize)))
 
 	// Create rows in market_mk20_deal_chunk for each chunk for the ID
-	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		batch := &pgx.Batch{}
 		batchSize := 15000
 		for i := 1; i <= numChunks; i++ {
@@ -289,7 +289,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 		Complete bool          `db:"complete"`
 		RefID    sql.NullInt64 `db:"ref_id"`
 	}
-	err := m.DB.Select(ctx, &chunkDetails, `SELECT chunk, chunk_size, ref_id, complete 
+	err := m.DB.SelectI(ctx, &chunkDetails, `SELECT chunk, chunk_size, ref_id, complete 
 								  FROM market_mk20_deal_chunk
 								  WHERE id = $1 AND chunk = $2`, id.String(), chunk)
 	if err != nil {
@@ -349,7 +349,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 	var pnum, refID int64
 
 	// Generate piece park details with tmp pieceCID and Size
-	comm, err := m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		err = tx.QueryRowI(`SELECT id FROM parked_pieces 
           					WHERE piece_cid = $1 
           					  AND piece_padded_size = $2 
@@ -393,7 +393,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 	failed := true
 	defer func() {
 		if failed {
-			_, err = m.DB.Exec(context.Background(), `DELETE FROM parked_piece_refs WHERE ref_id = $1`, refID)
+			_, err = m.DB.ExecI(context.Background(), `DELETE FROM parked_piece_refs WHERE ref_id = $1`, refID)
 			if err != nil {
 				log.Errorw("failed to delete parked piece ref", "deal", id, "chunk", chunk, "error", err)
 			}
@@ -411,7 +411,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 	log.Debugw("piece stored", "deal", id, "chunk", chunk)
 
 	// Update piece park details with correct values
-	comm, err = m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err = m.DB.BeginTransactionI(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		n, err := tx.ExecI(`UPDATE parked_pieces SET 
                          piece_cid = $1, 
                          piece_padded_size = $2, 
@@ -466,7 +466,7 @@ func (m *MK20) HandleUploadChunk(ctx context.Context, id ulid.ULID, chunk int, d
 
 func (m *MK20) HandleUploadFinalize(ctx context.Context, id ulid.ULID, deal *Deal, w http.ResponseWriter, auth string) {
 	var exists bool
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (
 								  SELECT 1
 								  FROM market_mk20_deal_chunk
 								  WHERE id = $1 AND (complete = FALSE OR complete IS NULL) 
@@ -531,7 +531,7 @@ func (m *MK20) HandleUploadFinalize(ctx context.Context, id ulid.ULID, deal *Dea
 
 	var valid bool
 
-	err = m.DB.QueryRow(ctx, `SELECT SUM(chunk_size) = $2 AS valid
+	err = m.DB.QueryRowI(ctx, `SELECT SUM(chunk_size) = $2 AS valid
 								FROM market_mk20_deal_chunk
 								WHERE id = $1;`, id.String(), rawSize).Scan(&valid)
 	if err != nil {
@@ -587,7 +587,7 @@ func (m *MK20) HandleUploadFinalize(ctx context.Context, id ulid.ULID, deal *Dea
 		}
 	}
 
-	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Now update the upload status to trigger the correct pipeline
 		n, err := tx.ExecI(`UPDATE market_mk20_deal_chunk SET finalize = TRUE where id = $1`, id.String())
 		if err != nil {
@@ -649,7 +649,7 @@ func (m *MK20) updateDealDetails(ctx context.Context, id ulid.ULID, deal *Deal, 
 
 	// Verify we have a deal is DB
 	var exists bool
-	err = m.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_deal WHERE id = $1)`, id.String()).Scan(&exists)
+	err = m.DB.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_deal WHERE id = $1)`, id.String()).Scan(&exists)
 	if err != nil {
 		return ErrServerInternalError, nil, nil, xerrors.Errorf("failed to check if deal exists: %w", err)
 	}
@@ -680,7 +680,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 	}()
 
 	var exists bool
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (
 									  SELECT 1
 									  FROM market_mk20_upload_waiting
 									  WHERE id = $1 AND chunked IS NULL);`, id.String()).Scan(&exists)
@@ -750,7 +750,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 	pieceExists := true
 
 	// Generate piece park details with tmp pieceCID and Size
-	comm, err := m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		err = tx.QueryRowI(`SELECT id FROM parked_pieces 
           					WHERE piece_cid = $1 
           					  AND piece_padded_size = $2 
@@ -813,12 +813,12 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 	failed := true
 	defer func() {
 		if failed {
-			_, serr := m.DB.Exec(context.Background(), `DELETE FROM parked_piece_refs WHERE ref_id = $1`, refID)
+			_, serr := m.DB.ExecI(context.Background(), `DELETE FROM parked_piece_refs WHERE ref_id = $1`, refID)
 			if serr != nil {
 				log.Errorw("failed to delete parked piece ref", "deal", id, "error", serr)
 			}
 
-			_, serr = m.DB.Exec(context.Background(), `UPDATE market_mk20_upload_waiting SET chunked = NULL, ref_id = NULL, ready_at = NULL WHERE id = $1`, id.String())
+			_, serr = m.DB.ExecI(context.Background(), `UPDATE market_mk20_upload_waiting SET chunked = NULL, ref_id = NULL, ready_at = NULL WHERE id = $1`, id.String())
 			if serr != nil {
 				log.Errorw("failed to update upload waiting", "deal", id, "error", serr)
 			}
@@ -855,7 +855,7 @@ func (m *MK20) HandleSerialUpload(ctx context.Context, id ulid.ULID, body io.Rea
 	log.Debugw("piece stored", "deal", id)
 
 	// Update piece park details with correct values
-	comm, err = m.DB.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err = m.DB.BeginTransactionI(context.Background(), func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		if havePInfo {
 			n, err := tx.ExecI(`UPDATE parked_pieces SET complete = true WHERE id = $1`, pnum)
 			if err != nil {
@@ -997,7 +997,7 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 	}()
 
 	var exists bool
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (
 									  SELECT 1
 									  FROM market_mk20_upload_waiting
 									  WHERE id = $1 AND chunked = FALSE AND ref_id IS NOT NULL);`, id.String()).Scan(&exists)
@@ -1028,7 +1028,7 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 	var pcidStr string
 	var rawSize, refID, pid, pieceSize int64
 
-	err = m.DB.QueryRow(ctx, `SELECT r.ref_id, p.piece_cid, p.piece_padded_size, p.piece_raw_size, p.id
+	err = m.DB.QueryRowI(ctx, `SELECT r.ref_id, p.piece_cid, p.piece_padded_size, p.piece_raw_size, p.id
 									FROM market_mk20_upload_waiting u
 									JOIN parked_piece_refs r ON u.ref_id = r.ref_id
 									JOIN parked_pieces p ON r.piece_id = p.id
@@ -1135,7 +1135,7 @@ func (m *MK20) HandleSerialUploadFinalize(ctx context.Context, id ulid.ULID, dea
 		}
 	}
 
-	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		_, err = tx.ExecI(`DELETE FROM market_mk20_upload_waiting WHERE id = $1`, id.String())
 		if err != nil {
 			return false, xerrors.Errorf("failed to delete upload waiting: %w", err)

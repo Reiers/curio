@@ -9,7 +9,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 
 	"github.com/filecoin-project/lotus/lib/lazy"
 )
@@ -26,10 +26,10 @@ type CachedBackPressure struct {
 	cache *ttlcache.Cache
 }
 
-func (c *CachedBackPressure) checkSectorBackpressure(ctx context.Context, cfg *config.CurioIngestConfig, db *harmonydb.DB) (bool, error) {
+func (c *CachedBackPressure) checkSectorBackpressure(ctx context.Context, cfg *config.CurioIngestConfig, db harmonyquery.DBInterface) (bool, error) {
 	if cfg.DoSnap {
 		var bufferedEncode, bufferedProve, waitDealSectors int
-		err := db.QueryRow(ctx, `
+		err := db.QueryRowI(ctx, `
 		WITH BufferedEncode AS (
 			SELECT COUNT(p.task_id_encode) - COUNT(t.owner_id) AS buffered_encode
 			FROM sectors_snap_pipeline p
@@ -74,7 +74,7 @@ func (c *CachedBackPressure) checkSectorBackpressure(ctx context.Context, cfg *c
 		}
 	}
 	var bufferedSDR, bufferedTrees, bufferedPoRep, waitDealSectors int
-	err := db.QueryRow(ctx, `
+	err := db.QueryRowI(ctx, `
 		WITH BufferedSDR AS (
 			SELECT COUNT(p.task_id_sdr) - COUNT(t.owner_id) AS buffered_sdr_count
 			FROM sectors_sdr_pipeline p
@@ -130,9 +130,9 @@ func (c *CachedBackPressure) checkSectorBackpressure(ctx context.Context, cfg *c
 	return false, nil
 }
 
-func (c *CachedBackPressure) checkMK20Backpressure(ctx context.Context, cfg *config.CurioIngestConfig, db *harmonydb.DB) (bool, error) {
+func (c *CachedBackPressure) checkMK20Backpressure(ctx context.Context, cfg *config.CurioIngestConfig, db harmonyquery.DBInterface) (bool, error) {
 	var runningPipelines, downloadingPending, commpPending, aggPending int64
-	err := db.QueryRow(ctx, `WITH pipeline_data AS (
+	err := db.QueryRowI(ctx, `WITH pipeline_data AS (
 										SELECT dp.id,
 											   dp.aggr_index,
 											   dp.complete,
@@ -204,12 +204,12 @@ func (c *CachedBackPressure) checkMK20Backpressure(ctx context.Context, cfg *con
 	return false, nil
 }
 
-func (c *CachedBackPressure) checkMK12Backpressure(ctx context.Context, cfg *config.CurioIngestConfig, db *harmonydb.DB) (bool, error) {
+func (c *CachedBackPressure) checkMK12Backpressure(ctx context.Context, cfg *config.CurioIngestConfig, db harmonyquery.DBInterface) (bool, error) {
 	// Check market pipeline conditions
 	// We reuse the pipeline stages logic from PipelineStatsMarket to determine
 	// how many pipelines are running and how many are queued at downloading/verify stages.
 	var runningPipelines, downloadingPending, verifyPending int64
-	err := db.QueryRow(ctx, `
+	err := db.QueryRowI(ctx, `
 						WITH pipeline_data AS (
 							SELECT dp.uuid,
 								   dp.complete,
@@ -282,7 +282,7 @@ func NewCachedBackPressure() *lazy.Lazy[*CachedBackPressure] {
 	})
 }
 
-func (c *CachedBackPressure) SectorPressure(ctx context.Context, cfg *config.CurioIngestConfig, db *harmonydb.DB) (bool, error) {
+func (c *CachedBackPressure) SectorPressure(ctx context.Context, cfg *config.CurioIngestConfig, db harmonyquery.DBInterface) (bool, error) {
 	pressure, err := c.cache.Get(sectorBackpressureKey)
 	if err == nil {
 		return pressure.(bool), nil
@@ -295,7 +295,7 @@ func (c *CachedBackPressure) SectorPressure(ctx context.Context, cfg *config.Cur
 	return p, nil
 }
 
-func (c *CachedBackPressure) MK12Pressure(ctx context.Context, cfg *config.CurioIngestConfig, db *harmonydb.DB) (bool, error) {
+func (c *CachedBackPressure) MK12Pressure(ctx context.Context, cfg *config.CurioIngestConfig, db harmonyquery.DBInterface) (bool, error) {
 	pressure, err := c.cache.Get(mk12BackpressureKey)
 	if err == nil {
 		return pressure.(bool), nil
@@ -308,7 +308,7 @@ func (c *CachedBackPressure) MK12Pressure(ctx context.Context, cfg *config.Curio
 	return p, nil
 }
 
-func (c *CachedBackPressure) MK20Pressure(ctx context.Context, cfg *config.CurioIngestConfig, db *harmonydb.DB) (bool, error) {
+func (c *CachedBackPressure) MK20Pressure(ctx context.Context, cfg *config.CurioIngestConfig, db harmonyquery.DBInterface) (bool, error) {
 	pressure, err := c.cache.Get(mk20BackpressureKey)
 	if err == nil {
 		return pressure.(bool), nil

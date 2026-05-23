@@ -23,7 +23,7 @@ func (m *MK20) DealStatus(ctx context.Context, id ulid.ULID) *DealStatus {
 	var pdp_complete, ddo_complete sql.NullBool
 	var pdp_error, ddo_error sql.NullString
 
-	err := m.DB.QueryRow(ctx, `SELECT
+	err := m.DB.QueryRowI(ctx, `SELECT
 									  (pdp_v1->>'complete')::boolean AS pdp_complete,
 									  (pdp_v1->>'error')::text AS pdp_error,
 									  (ddo_v1->>'complete')::boolean AS ddo_complete,
@@ -75,7 +75,7 @@ func (m *MK20) DealStatus(ctx context.Context, id ulid.ULID) *DealStatus {
 			pdp := deal.Products.PDPV1
 			if pdp.AddPiece {
 				var waitingForUpload bool
-				err = m.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_upload_waiting WHERE id = $1)`, id.String()).Scan(&waitingForUpload)
+				err = m.DB.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_upload_waiting WHERE id = $1)`, id.String()).Scan(&waitingForUpload)
 				if err != nil {
 					log.Errorw("failed to query the db for deal status", "deal", id.String(), "err", err)
 					return &DealStatus{
@@ -167,7 +167,7 @@ func (m *MK20) DealStatus(ctx context.Context, id ulid.ULID) *DealStatus {
 			pdp := deal.Products.PDPV1
 			if pdp.AddPiece {
 				var waitingForUpload bool
-				err = m.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_upload_waiting WHERE id = $1)`, id.String()).Scan(&waitingForUpload)
+				err = m.DB.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_upload_waiting WHERE id = $1)`, id.String()).Scan(&waitingForUpload)
 				if err != nil {
 					log.Errorw("failed to query the db for deal status", "deal", id.String(), "err", err)
 					return &DealStatus{
@@ -210,7 +210,7 @@ func (m *MK20) DealStatus(ctx context.Context, id ulid.ULID) *DealStatus {
 
 func (m *MK20) getDDOStatus(ctx context.Context, id ulid.ULID) (DealState, error) {
 	var waitingForUpload bool
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_upload_waiting WHERE id = $1)`, id.String()).Scan(&waitingForUpload)
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_upload_waiting WHERE id = $1)`, id.String()).Scan(&waitingForUpload)
 	if err != nil {
 		return DealStateAccepted, err
 	}
@@ -219,7 +219,7 @@ func (m *MK20) getDDOStatus(ctx context.Context, id ulid.ULID) (DealState, error
 	}
 
 	var waitingForPipeline bool
-	err = m.DB.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_pipeline_waiting WHERE id = $1)`, id.String()).Scan(&waitingForPipeline)
+	err = m.DB.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM market_mk20_pipeline_waiting WHERE id = $1)`, id.String()).Scan(&waitingForPipeline)
 	if err != nil {
 		return DealStateAccepted, err
 	}
@@ -233,7 +233,7 @@ func (m *MK20) getDDOStatus(ctx context.Context, id ulid.ULID) (DealState, error
 		Indexed bool `db:"indexed"`
 	}
 
-	err = m.DB.Select(ctx, &pdeals, `SELECT 
+	err = m.DB.SelectI(ctx, &pdeals, `SELECT 
 									sector,
 									sealed,
 									indexed
@@ -273,7 +273,7 @@ func (m *MK20) Supported(ctx context.Context) (map[string]bool, map[string]bool,
 		Name    string `db:"name"`
 		Enabled bool   `db:"enabled"`
 	}
-	err := m.DB.Select(ctx, &products, `SELECT name, enabled FROM market_mk20_products`)
+	err := m.DB.SelectI(ctx, &products, `SELECT name, enabled FROM market_mk20_products`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -288,7 +288,7 @@ func (m *MK20) Supported(ctx context.Context) (map[string]bool, map[string]bool,
 		Name    string `db:"name"`
 		Enabled bool   `db:"enabled"`
 	}
-	err = m.DB.Select(ctx, &sources, `SELECT name, enabled FROM market_mk20_data_source`)
+	err = m.DB.SelectI(ctx, &sources, `SELECT name, enabled FROM market_mk20_data_source`)
 	if err != nil {
 		return nil, nil, err
 	}

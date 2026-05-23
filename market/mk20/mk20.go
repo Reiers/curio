@@ -187,7 +187,7 @@ func (m *MK20) ExecuteDeal(ctx context.Context, deal *Deal, auth string) (result
 			return rejection
 		}
 
-		comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		comm, err := m.DB.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			err = deal.SaveToDB(tx)
 			if err != nil {
 				return false, err
@@ -582,7 +582,7 @@ func (m *MK20) processPDPDeal(ctx context.Context, deal *Deal) (result *Provider
 	}
 
 	// Save deal to DB and start pipeline if required
-	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Save deal
 		err = deal.SaveToDB(tx)
 		if err != nil {
@@ -700,7 +700,7 @@ func (m *MK20) sanitizePDPDeal(ctx context.Context, deal *Deal) (*ProviderDealRe
 	if p.DeleteDataSet || p.AddPiece {
 		pid := *p.DataSetID
 		var exists bool
-		err := m.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set WHERE id = $1 AND removed = FALSE AND client = $2)`, pid, deal.Client).Scan(&exists)
+		err := m.DB.QueryRowI(ctx, `SELECT EXISTS(SELECT 1 FROM pdp_data_set WHERE id = $1 AND removed = FALSE AND client = $2)`, pid, deal.Client).Scan(&exists)
 		if err != nil {
 			log.Errorw("error checking if proofset exists", "error", err)
 			return &ProviderDealRejectionInfo{
@@ -719,7 +719,7 @@ func (m *MK20) sanitizePDPDeal(ctx context.Context, deal *Deal) (*ProviderDealRe
 	if p.DeletePiece {
 		pid := *p.DataSetID
 		var exists bool
-		err := m.DB.QueryRow(ctx, `SELECT COUNT(*) = cardinality($2::BIGINT[]) AS all_exist_and_active
+		err := m.DB.QueryRowI(ctx, `SELECT COUNT(*) = cardinality($2::BIGINT[]) AS all_exist_and_active
 										FROM pdp_dataset_piece r
 										JOIN pdp_data_set s ON r.data_set_id = s.id
 										WHERE r.data_set_id = $1
@@ -952,7 +952,7 @@ func (m *MK20) UpdateDeal(ctx context.Context, id ulid.ULID, deal *Deal, auth st
 	}
 
 	var exists bool
-	err := m.DB.QueryRow(ctx, `SELECT EXISTS (
+	err := m.DB.QueryRowI(ctx, `SELECT EXISTS (
 								  SELECT 1
 								  FROM market_mk20_deal
 								  WHERE id = $1)`, id.String()).Scan(&exists)
@@ -1003,7 +1003,7 @@ func (m *MK20) UpdateDeal(ctx context.Context, id ulid.ULID, deal *Deal, auth st
 		}
 	}
 
-	comm, err := m.DB.BeginTransaction(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+	comm, err := m.DB.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 		// Save the updated deal to DB
 		err = nd.UpdateDeal(tx)
 		if err != nil {
