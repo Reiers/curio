@@ -218,7 +218,13 @@ func (h *taskTypeHandler) considerWork(from string, tasks []task, eventEmitter e
 		if len(failedTIDs) > 0 {
 			tIDs = goodTIDs
 			log.Errorw("did not accept task", "task_ids", failedTIDs, "reason", "storage claim failed", "name", h.Name)
-			_, err := h.TaskEngine.cfg.db.ExecI(h.TaskEngine.cfg.ctx, `UPDATE harmony_task SET owner_id = NULL WHERE id = ANY($1)`, failedTIDs)
+			// Was: `WHERE id = ANY($1)`, failedTIDs. Postgres-array syntax
+			// rejected by modernc.org/sqlite. Translated to a backend-portable
+			// IN-clause via expandIn helper (see harmony/harmonytask/sqlhelpers.go).
+			inClause, inArgs := inClauseTaskIDs(failedTIDs)
+			_, err := h.TaskEngine.cfg.db.ExecI(h.TaskEngine.cfg.ctx,
+				expandIn(`UPDATE harmony_task SET owner_id = NULL WHERE id IN (?IN?)`, inClause),
+				inArgs...)
 			if err != nil {
 				log.Errorw("Could not reset failed tasks", "error", err)
 			}

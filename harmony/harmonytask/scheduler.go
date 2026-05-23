@@ -432,8 +432,12 @@ func (e *TaskEngine) pollAllTaskTypes() map[string][]task {
 	for i, h := range e.handlers {
 		names[i] = h.Name
 	}
+	// Was: `WHERE name = ANY($1)`, names. Postgres-array syntax rejected
+	// by modernc.org/sqlite. Translated to a backend-portable IN-clause.
+	inClause, inArgs := inClauseStrings(names)
 	err := e.cfg.db.SelectI(context.Background(), &rows,
-		`SELECT id, name, update_time, posted_time, retries FROM harmony_task WHERE owner_id IS NULL AND name = ANY($1)`, names)
+		expandIn(`SELECT id, name, update_time, posted_time, retries FROM harmony_task WHERE owner_id IS NULL AND name IN (?IN?)`, inClause),
+		inArgs...)
 	if err != nil {
 		log.Errorw("failed to poll tasks from db", "error", err)
 		return nil
