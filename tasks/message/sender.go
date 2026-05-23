@@ -16,7 +16,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/big"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -70,7 +70,7 @@ type Sender struct {
 
 	sendTask *SendTask
 
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 }
 
 type SendTask struct {
@@ -79,7 +79,7 @@ type SendTask struct {
 	api    SenderAPI
 	signer SignerAPI
 
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 }
 
 func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
@@ -98,7 +98,7 @@ func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 		SignedData []byte  `db:"signed_data"`
 	}
 
-	err = s.db.QueryRow(ctx, `
+	err = s.db.QueryRowI(ctx, `
 		SELECT from_key, nonce, to_addr, unsigned_data, unsigned_cid, signed_data
 		FROM message_sends 
 		WHERE send_task_id = $1`, taskID).Scan(
@@ -122,7 +122,7 @@ func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 		}
 
 		// try to acquire lock
-		cn, err := s.db.Exec(ctx, `
+		cn, err := s.db.ExecI(ctx, `
 			INSERT INTO message_send_locks (from_key, task_id, claimed_at) 
 			VALUES ($1, $2, CURRENT_TIMESTAMP) ON CONFLICT (from_key) DO UPDATE 
 			SET task_id = EXCLUDED.task_id, claimed_at = CURRENT_TIMESTAMP 
@@ -143,7 +143,7 @@ func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 
 	// defer release db send lock
 	defer func() {
-		_, err2 := s.db.Exec(ctx, `
+		_, err2 := s.db.ExecI(ctx, `
 			DELETE from message_send_locks WHERE from_key = $1 AND task_id = $2`, dbMsg.FromKey, taskID)
 		if err2 != nil {
 			log.Errorw("releasing send lock", "task_id", taskID, "from", dbMsg.FromKey, "error", err2)
@@ -165,7 +165,7 @@ func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 
 		// get nonce from db
 		var dbNonce *uint64
-		r := s.db.QueryRow(ctx, `
+		r := s.db.QueryRowI(ctx, `
 			SELECT MAX(nonce) FROM message_sends WHERE from_key = $1 AND send_success = true`, msg.From.String())
 		if err := r.Scan(&dbNonce); err != nil {
 			return false, xerrors.Errorf("getting nonce from db: %w", err)
@@ -195,7 +195,7 @@ func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 
 		// write to db
 
-		n, err := s.db.Exec(ctx, `
+		n, err := s.db.ExecI(ctx, `
 			UPDATE message_sends SET nonce = $1, signed_data = $2, signed_json = $3, signed_cid = $4 
 			WHERE send_task_id = $5`,
 			msg.Nonce, data, string(jsonBytes), sigMsg.Cid().String(), taskID)
@@ -231,7 +231,7 @@ func (s *SendTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned
 		sendError = err.Error()
 	}
 
-	_, err = s.db.Exec(ctx, `
+	_, err = s.db.ExecI(ctx, `
 		UPDATE message_sends SET send_success = $1, send_error = $2, send_time = CURRENT_TIMESTAMP 
 		WHERE send_task_id = $3`, sendSuccess, sendError, taskID)
 	if err != nil {
@@ -279,7 +279,7 @@ var _ harmonytask.TaskInterface = &SendTask{}
 var _ = harmonytask.Reg(&SendTask{})
 
 // NewSender creates a new Sender.
-func NewSender(api SenderAPI, signer SignerAPI, db *harmonydb.DB, maximizeFeeCap bool) (*Sender, *SendTask) {
+func NewSender(api SenderAPI, signer SignerAPI, db harmonyquery.DBInterface, maximizeFeeCap bool) (*Sender, *SendTask) {
 	st := &SendTask{
 		api:    api,
 		signer: signer,
@@ -377,8 +377,8 @@ func (s *Sender) Send(ctx context.Context, msg *types.Message, mss *api.MessageS
 	}
 
 	var sendTaskID *harmonytask.TaskID
-	taskAdder(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
-		_, err := tx.Exec(`insert into message_sends (from_key, to_addr, send_reason, unsigned_data, unsigned_cid, send_task_id) values ($1, $2, $3, $4, $5, $6)`,
+	taskAdder(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
+		_, err := tx.ExecI(`insert into message_sends (from_key, to_addr, send_reason, unsigned_data, unsigned_cid, send_task_id) values ($1, $2, $3, $4, $5, $6)`,
 			msg.From.String(), msg.To.String(), reason, unsBytes.Bytes(), msg.Cid().String(), id)
 		if err != nil {
 			return false, xerrors.Errorf("inserting message into db: %w", err)
@@ -409,7 +409,7 @@ func (s *Sender) Send(ctx context.Context, msg *types.Message, mss *api.MessageS
 		var sigCidStr, sendError *string
 		var sendSuccess *bool
 
-		err = s.db.QueryRow(ctx, `select signed_cid, send_success, send_error from message_sends where send_task_id = $1`, &sendTaskID).Scan(&sigCidStr, &sendSuccess, &sendError)
+		err = s.db.QueryRowI(ctx, `select signed_cid, send_success, send_error from message_sends where send_task_id = $1`, &sendTaskID).Scan(&sigCidStr, &sendSuccess, &sendError)
 		if err != nil {
 			return cid.Undef, xerrors.Errorf("getting cid for task: %w", err)
 		}

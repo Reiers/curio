@@ -14,7 +14,7 @@ import (
 	"go.uber.org/multierr"
 	"golang.org/x/xerrors"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -28,7 +28,7 @@ type SenderETH struct {
 
 	sendTask *SendTaskETH
 
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 }
 
 type SendTaskETH struct {
@@ -36,7 +36,7 @@ type SendTaskETH struct {
 
 	client ethchain.EthClient
 
-	db *harmonydb.DB
+	db harmonyquery.DBInterface
 }
 
 func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
@@ -53,7 +53,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		SendError    sql.NullString `db:"send_error"`
 	}
 
-	err = s.db.QueryRow(ctx,
+	err = s.db.QueryRowI(ctx,
 		`SELECT from_address, to_address, unsigned_tx, unsigned_hash, nonce, signed_tx, send_success, send_error
          FROM message_sends_eth
          WHERE send_task_id = $1`, taskID).Scan(
@@ -78,7 +78,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		}
 
 		// Try to acquire lock
-		cn, err := s.db.Exec(ctx,
+		cn, err := s.db.ExecI(ctx,
 			`INSERT INTO message_send_eth_locks (from_address, task_id, claimed_at)
              VALUES ($1, $2, CURRENT_TIMESTAMP)
              ON CONFLICT (from_address) DO UPDATE
@@ -100,7 +100,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 
 	// Defer release of the lock
 	defer func() {
-		_, err2 := s.db.Exec(ctx,
+		_, err2 := s.db.ExecI(ctx,
 			`DELETE FROM message_send_eth_locks WHERE from_address = $1 AND task_id = $2`, dbTx.FromAddress, taskID)
 		if err2 != nil {
 			log.Errorw("releasing send lock", "task_id", taskID, "from", dbTx.FromAddress, "error", err2)
@@ -126,7 +126,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 
 		// Get max nonce from successful transactions in DB
 		var dbNonce *uint64
-		err = s.db.QueryRow(ctx,
+		err = s.db.QueryRowI(ctx,
 			`SELECT MAX(nonce) FROM message_sends_eth WHERE from_address = $1 AND send_success = TRUE`, dbTx.FromAddress).Scan(&dbNonce)
 		if err != nil {
 			return false, xerrors.Errorf("getting max nonce from db: %w", err)
@@ -153,7 +153,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		}
 
 		// Update the database with nonce and signed transaction
-		n, err := s.db.Exec(ctx,
+		n, err := s.db.ExecI(ctx,
 			`UPDATE message_sends_eth
              SET nonce = $1, signed_tx = $2, signed_hash = $3
              WHERE send_task_id = $4`, assignedNonce, signedTxData, signedTx.Hash().Hex(), taskID)
@@ -183,7 +183,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		sendError = err.Error()
 	}
 
-	_, err = s.db.Exec(ctx,
+	_, err = s.db.ExecI(ctx,
 		`UPDATE message_sends_eth
          SET send_success = $1, send_error = $2, send_time = CURRENT_TIMESTAMP
          WHERE send_task_id = $3`, sendSuccess, sendError, taskID)
@@ -197,7 +197,7 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 func (s *SendTaskETH) signTransaction(ctx context.Context, fromAddress common.Address, tx *types.Transaction) (*types.Transaction, error) {
 	// Fetch the private key from the database
 	var privateKeyData []byte
-	err := s.db.QueryRow(ctx,
+	err := s.db.QueryRowI(ctx,
 		`SELECT private_key FROM eth_keys WHERE address = $1`, fromAddress.Hex()).Scan(&privateKeyData)
 	if err != nil {
 		return nil, xerrors.Errorf("fetching private key from db: %w", err)
@@ -254,7 +254,7 @@ var _ harmonytask.TaskInterface = &SendTaskETH{}
 var _ = harmonytask.Reg(&SendTaskETH{})
 
 // NewSenderETH creates a new SenderETH.
-func NewSenderETH(client ethchain.EthClient, db *harmonydb.DB) (*SenderETH, *SendTaskETH) {
+func NewSenderETH(client ethchain.EthClient, db harmonyquery.DBInterface) (*SenderETH, *SendTaskETH) {
 	st := &SendTaskETH{
 		client: client,
 		db:     db,
@@ -341,8 +341,8 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 	taskAdder := s.sendTask.sendTF.Val(ctx)
 
 	var sendTaskID *harmonytask.TaskID
-	taskAdder(func(id harmonytask.TaskID, txdb *harmonydb.Tx) (shouldCommit bool, seriousError error) {
-		_, err := txdb.Exec(`INSERT INTO message_sends_eth (from_address, to_address, send_reason, unsigned_tx, unsigned_hash, send_task_id)
+	taskAdder(func(id harmonytask.TaskID, txdb harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
+		_, err := txdb.ExecI(`INSERT INTO message_sends_eth (from_address, to_address, send_reason, unsigned_tx, unsigned_hash, send_task_id)
                              VALUES ($1, $2, $3, $4, $5, $6)`,
 			fromAddress.Hex(), tx.To().Hex(), reason, unsignedTxData, unsignedHash, id)
 		if err != nil {
@@ -376,7 +376,7 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 			SendError   sql.NullString `db:"send_error"`
 		}
 
-		err := s.db.QueryRow(ctx,
+		err := s.db.QueryRowI(ctx,
 			`SELECT signed_hash, send_success, send_error FROM message_sends_eth WHERE send_task_id = $1`, sendTaskID).Scan(
 			&dbTx.SignedHash, &dbTx.SendSuccess, &dbTx.SendError)
 		if err != nil {

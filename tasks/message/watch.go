@@ -10,7 +10,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/lib/chainsched"
 
@@ -29,7 +29,7 @@ type MessageWaiterApi interface {
 }
 
 type MessageWatcher struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	ht  *harmonytask.TaskEngine
 	api MessageWaiterApi
 
@@ -45,7 +45,7 @@ type MessageWatcher struct {
 	onLanded []func()
 }
 
-func NewMessageWatcher(db *harmonydb.DB, ht *harmonytask.TaskEngine, pcs *chainsched.CurioChainSched, api MessageWaiterApi) (*MessageWatcher, error) {
+func NewMessageWatcher(db harmonyquery.DBInterface, ht *harmonytask.TaskEngine, pcs *chainsched.CurioChainSched, api MessageWaiterApi) (*MessageWatcher, error) {
 	mw := &MessageWatcher{
 		db:       db,
 		ht:       ht,
@@ -113,7 +113,7 @@ func (mw *MessageWatcher) update() {
 
 	// first if we see pending messages with null owner, assign them to ourselves
 	{
-		n, err := mw.db.Exec(ctx, `UPDATE message_waits SET waiter_machine_id = $1 WHERE waiter_machine_id IS NULL AND executed_tsk_cid IS NULL`, machineID)
+		n, err := mw.db.ExecI(ctx, `UPDATE message_waits SET waiter_machine_id = $1 WHERE waiter_machine_id IS NULL AND executed_tsk_cid IS NULL`, machineID)
 		if err != nil {
 			log.Errorf("failed to assign pending messages: %+v", err)
 			return
@@ -133,7 +133,7 @@ func (mw *MessageWatcher) update() {
 	}
 
 	// really large limit in case of things getting stuck and backlogging severely
-	err = mw.db.Select(ctx, &msgs, `SELECT signed_message_cid, from_key, nonce FROM message_waits
+	err = mw.db.SelectI(ctx, &msgs, `SELECT signed_message_cid, from_key, nonce FROM message_waits
                           JOIN message_sends ON signed_message_cid = signed_cid
                           WHERE waiter_machine_id = $1 LIMIT 10000`, machineID)
 	if err != nil {
@@ -200,7 +200,7 @@ func (mw *MessageWatcher) update() {
 		}
 
 		// record in db
-		_, err = mw.db.Exec(ctx, `UPDATE message_waits SET
+		_, err = mw.db.ExecI(ctx, `UPDATE message_waits SET
 			waiter_machine_id = NULL,
 			executed_tsk_cid = $1, executed_tsk_epoch = $2,
 			executed_msg_cid = $3, executed_msg_data = $4,
