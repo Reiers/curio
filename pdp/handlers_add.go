@@ -23,7 +23,6 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/pdp/contract"
 )
 
@@ -93,7 +92,7 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
 	// Start a DB transaction
 	_, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		// Step 4: Get pdp_piecerefs matching all subPiece cids + make sure those refs belong to serviceLabel
-		rows, err := tx.Query(`
+		rows, err := tx.QueryI(`
             SELECT ppr.piece_cid, ppr.id AS pdp_pieceref_id, ppr.piece_ref,
                    pp.piece_padded_size, pp.piece_raw_size
             FROM pdp_piecerefs ppr
