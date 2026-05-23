@@ -329,7 +329,7 @@ func FSRegister(ctx context.Context, db harmonyquery.DBInterface, full api.FullN
 func getSender(ctx context.Context, db harmonyquery.DBInterface) (common.Address, address.Address, *ecdsa.PrivateKey, error) {
 	// Fetch the private key from the database
 	var privateKeyData []byte
-	err := db.QueryRow(ctx,
+	err := db.QueryRowI(ctx,
 		`SELECT private_key FROM eth_keys WHERE role = 'pdp'`).Scan(&privateKeyData)
 	if err != nil {
 		return common.Address{}, address.Address{}, nil, xerrors.Errorf("fetching pdp private key from db: %w", err)

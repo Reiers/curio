@@ -52,7 +52,7 @@ type DealData struct {
 
 func DealDataSDRPoRep(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.SealCalls, spId, sectorNumber int64, spt abi.RegisteredSealProof, commDOnly bool) (*DealData, error) {
 	var pieces []dealMetadata
-	err := db.Select(ctx, &pieces, `
+	err := db.SelectI(ctx, &pieces, `
 		SELECT piece_index, piece_cid, piece_size, data_url, data_headers, data_raw_size, data_delete_on_finalize
 		FROM sectors_sdr_initial_pieces
 		WHERE sp_id = $1 AND sector_number = $2 ORDER BY piece_index ASC`, spId, sectorNumber)
@@ -65,7 +65,7 @@ func DealDataSDRPoRep(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.
 
 func DealDataSnap(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.SealCalls, spId, sectorNumber int64, spt abi.RegisteredSealProof) (*DealData, error) {
 	var pieces []dealMetadata
-	err := db.Select(ctx, &pieces, `
+	err := db.SelectI(ctx, &pieces, `
 		SELECT piece_index, piece_cid, piece_size, data_url, data_headers, data_raw_size, data_delete_on_finalize
 		FROM sectors_snap_initial_pieces
 		WHERE sp_id = $1 AND sector_number = $2 ORDER BY piece_index ASC`, spId, sectorNumber)
@@ -80,7 +80,7 @@ func UnsealedCidFromPieces(ctx context.Context, db harmonyquery.DBInterface, spI
 	var sectorParams []struct {
 		RegSealProof int64 `db:"reg_seal_proof"`
 	}
-	err := db.Select(ctx, &sectorParams, `
+	err := db.SelectI(ctx, &sectorParams, `
 			SELECT reg_seal_proof
 				FROM sectors_meta
 				WHERE sp_id = $1 AND sector_num = $2`, spId, sectorNumber)
@@ -96,7 +96,7 @@ func UnsealedCidFromPieces(ctx context.Context, db harmonyquery.DBInterface, spI
 		PieceCID   string `db:"piece_cid"`
 		PieceSize  int64  `db:"piece_size"`
 	}
-	err = db.Select(ctx, &minDealMetadata, `
+	err = db.SelectI(ctx, &minDealMetadata, `
 		SELECT piece_num, piece_cid, piece_size
 		FROM sectors_meta_pieces
 		WHERE sp_id = $1 AND sector_num = $2 ORDER BY piece_num ASC`, spId, sectorNumber)
@@ -203,7 +203,7 @@ func getDealMetadata(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.S
 						var pieceID []struct {
 							PieceID storiface.PieceNumber `db:"piece_id"`
 						}
-						err = db.Select(ctx, &pieceID, `SELECT piece_id FROM parked_piece_refs WHERE ref_id = $1`, refNum)
+						err = db.SelectI(ctx, &pieceID, `SELECT piece_id FROM parked_piece_refs WHERE ref_id = $1`, refNum)
 						if err != nil {
 							return nil, xerrors.Errorf("getting pieceID: %w", err)
 						}

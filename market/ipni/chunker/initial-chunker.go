@@ -151,7 +151,7 @@ func (c *InitialChunker) finishDB(ctx context.Context, db harmonyquery.DBInterfa
 		return nil, nil
 	}
 
-	commit, err := db.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (bool, error) {
+	commit, err := db.BeginTransactionI(context.Background(), func(tx harmonyquery.TxInterface) (bool, error) {
 		batch := &pgx.Batch{}
 
 		// Queue insert statements into the batch

@@ -30,7 +30,7 @@ func Upsert(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize in
 
 	if indexValid {
 		var id int64
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
 			INSERT INTO parked_pieces (piece_cid, piece_padded_size, piece_raw_size, long_term)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (piece_cid, piece_padded_size, long_term) WHERE cleanup_task_id IS NULL
@@ -58,7 +58,7 @@ func UpsertSkip(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSiz
 
 	if indexValid {
 		var id int64
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
 			INSERT INTO parked_pieces (piece_cid, piece_padded_size, piece_raw_size, long_term, skip)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (piece_cid, piece_padded_size, long_term) WHERE cleanup_task_id IS NULL
@@ -82,7 +82,7 @@ func UpsertSkip(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSiz
 // applied only to the inserted row.
 func upsertFallback(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize int64, longTerm bool, skip *bool) (int64, error) {
 	var id int64
-	err := tx.QueryRow(`
+	err := tx.QueryRowI(`
 		SELECT id FROM parked_pieces
 		WHERE piece_cid = $1 AND piece_padded_size = $2 AND long_term = $3 AND cleanup_task_id IS NULL
 		ORDER BY id LIMIT 1`, pieceCID, paddedSize, longTerm).Scan(&id)
@@ -93,12 +93,12 @@ func upsertFallback(tx harmonyquery.TxInterface, pieceCID string, paddedSize, ra
 		return 0, xerrors.Errorf("upsert parked_pieces (fallback select): %w", err)
 	}
 	if skip != nil {
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
 			INSERT INTO parked_pieces (piece_cid, piece_padded_size, piece_raw_size, long_term, skip)
 			VALUES ($1, $2, $3, $4, $5) RETURNING id`,
 			pieceCID, paddedSize, rawSize, longTerm, *skip).Scan(&id)
 	} else {
-		err = tx.QueryRow(`
+		err = tx.QueryRowI(`
 			INSERT INTO parked_pieces (piece_cid, piece_padded_size, piece_raw_size, long_term)
 			VALUES ($1, $2, $3, $4) RETURNING id`,
 			pieceCID, paddedSize, rawSize, longTerm).Scan(&id)
@@ -131,7 +131,7 @@ func ActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 // the flag is false.
 func RefreshActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 	var exists bool
-	err := tx.QueryRow(`
+	err := tx.QueryRowI(`
 		SELECT EXISTS (
 			SELECT 1
 			FROM pg_catalog.pg_index ix
