@@ -19,7 +19,6 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ffi"
 	"github.com/filecoin-project/curio/lib/filler"
 	"github.com/filecoin-project/curio/lib/storiface"

@@ -4,7 +4,6 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 )
 
 func EnsureServiceTermination(tx harmonyquery.TxInterface, dataSetID int64) error {

@@ -10,7 +10,6 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 )
 
 var activePieceIndexKnownValid atomic.Bool

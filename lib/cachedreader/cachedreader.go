@@ -23,7 +23,6 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/commcidv2"
 	"github.com/filecoin-project/curio/lib/pieceprovider"
 	"github.com/filecoin-project/curio/lib/storiface"
@@ -182,7 +181,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 		pieceSize = padreader.PaddedSize(rawSize).Padded()
 	} else {
 		var pieceSizeRaw int64
-		err := cpr.db.QueryRow(ctx, `SELECT COALESCE(
+		err := cpr.db.QueryRowI(ctx, `SELECT COALESCE(
 												(SELECT piece_size FROM market_piece_metadata WHERE piece_cid = $1 ORDER BY piece_size DESC LIMIT 1),
 												(SELECT piece_padded_size FROM parked_pieces WHERE piece_cid = $1 ORDER BY piece_padded_size DESC LIMIT 1),
 												0
@@ -208,7 +207,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 		PieceRef sql.NullInt64           `db:"piece_ref"`
 	}
 
-	err := cpr.db.Select(ctx, &deals, `SELECT 
+	err := cpr.db.SelectI(ctx, &deals, `SELECT 
 											  mpd.id,
 											  mpd.sp_id,
 											  mpd.sector_num,
@@ -230,7 +229,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 	if len(deals) == 0 {
 		if retrieval {
 			var isPDP bool
-			err = cpr.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1);`, pieceCid.String()).Scan(&isPDP)
+			err = cpr.db.QueryRowI(ctx, `SELECT EXISTS (SELECT 1 FROM pdp_piecerefs WHERE piece_cid = $1);`, pieceCid.String()).Scan(&isPDP)
 			if err != nil {
 				return nil, 0, fmt.Errorf("failed to query pdp_piecerefs for piece cid %s: %w", pieceCid, err)
 			}
@@ -304,7 +303,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromPiecePark(ctx context.Context, p
 
 	if pieceRef != nil {
 		var pdr []pieceData
-		err := cpr.db.Select(ctx, &pdr, `
+		err := cpr.db.SelectI(ctx, &pdr, `
 										SELECT
 										  pp.id,
 										  pp.piece_cid,
@@ -324,7 +323,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromPiecePark(ctx context.Context, p
 	if pieceCid != nil && pieceSize != nil {
 		pcid := *pieceCid
 		var pdc []pieceData
-		err := cpr.db.Select(ctx, &pdc, `
+		err := cpr.db.SelectI(ctx, &pdc, `
 										SELECT
 										  id,
 										  piece_cid,

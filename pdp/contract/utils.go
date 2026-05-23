@@ -25,7 +25,6 @@ import (
 	"github.com/filecoin-project/go-state-types/builtin"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ethchain"
 
 	"github.com/filecoin-project/lotus/api"

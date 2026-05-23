@@ -38,7 +38,6 @@ import (
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/pieceprovider"
 	"github.com/filecoin-project/curio/lib/urlhelper"
 	"github.com/filecoin-project/curio/market/indexstore"
@@ -250,7 +249,7 @@ func (p *Provider) getAd(ctx context.Context, ad cid.Cid, provider string) (sche
 		Metadata  []byte
 	}
 
-	err := p.db.Select(ctx, &ads, `SELECT 
+	err := p.db.SelectI(ctx, &ads, `SELECT 
 										context_id,
 										is_rm, 
 										previous, 
@@ -349,7 +348,7 @@ func (p *Provider) getAdBytes(ctx context.Context, ad cid.Cid, provider string) 
 // If the head is not found or if there is an error, it returns an appropriate error.
 func (p *Provider) getHead(ctx context.Context, provider string) ([]byte, error) {
 	var headStr string
-	err := p.db.QueryRow(ctx, `SELECT head FROM ipni_head WHERE provider = $1`, provider).Scan(&headStr)
+	err := p.db.QueryRowI(ctx, `SELECT head FROM ipni_head WHERE provider = $1`, provider).Scan(&headStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, chunker.ErrNotFound
@@ -631,7 +630,7 @@ func (p *Provider) startPublishing(ctx context.Context) {
 // If the head CID is not found or an error occurs, it returns cid.Undef and the error respectively.
 func (p *Provider) getHeadCID(ctx context.Context, provider string) (cid.Cid, error) {
 	var headStr string
-	err := p.db.QueryRow(ctx, `SELECT head FROM ipni_head WHERE provider = $1`, provider).Scan(&headStr)
+	err := p.db.QueryRowI(ctx, `SELECT head FROM ipni_head WHERE provider = $1`, provider).Scan(&headStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return cid.Undef, nil

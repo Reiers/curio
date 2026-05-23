@@ -26,7 +26,6 @@ import (
 	"github.com/filecoin-project/go-padreader"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/cachedreader"
 	"github.com/filecoin-project/curio/lib/commcidv2"
 	"github.com/filecoin-project/curio/lib/pieceprovider"
@@ -225,7 +224,7 @@ func (p *ServeChunker) getEntry(rctx context.Context, block cid.Cid, speculated 
 
 	var ipniChunks []ipniChunk
 
-	err = p.db.Select(ctx, &ipniChunks, `SELECT 
+	err = p.db.SelectI(ctx, &ipniChunks, `SELECT 
 			current.piece_cid, 
 			current.from_car, 
 			current.first_cid, 
@@ -263,7 +262,7 @@ func (p *ServeChunker) getEntry(rctx context.Context, block cid.Cid, speculated 
 	if !yes {
 		var rawSize int64
 		var singlePiece bool
-		err := p.db.QueryRow(ctx, `WITH parked AS (
+		err := p.db.QueryRowI(ctx, `WITH parked AS (
 												  SELECT MAX(pp.piece_raw_size) AS raw_size
 												  FROM parked_pieces pp
 												  WHERE pp.piece_cid = $1
@@ -535,7 +534,7 @@ func (p *ServeChunker) reconstructChunkFromDB(ctx context.Context, chunk, piecev
 func (p *ServeChunker) checkIsEntrySkip(ctx context.Context, entry cid.Cid) (bool, error) {
 	// CREATE INDEX ipni_entries_skip ON ipni(entries, is_skip, piece_cid);
 	var isSkip bool
-	err := p.db.QueryRow(ctx, `SELECT is_skip FROM ipni WHERE entries = $1`, entry).Scan(&isSkip)
+	err := p.db.QueryRowI(ctx, `SELECT is_skip FROM ipni WHERE entries = $1`, entry).Scan(&isSkip)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
