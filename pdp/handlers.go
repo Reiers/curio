@@ -1266,7 +1266,7 @@ func (p *PDPService) cleanup(ctx context.Context) {
 				placeholders[i] = fmt.Sprintf("$%d", i+1)
 				args[i] = id
 			}
-			query := "DELETE FROM parked_piece_refs WHERE ref_id IN (" + strings.Join(placeholders, ",") + ")"
+			query := harmonyquery.RawString("DELETE FROM parked_piece_refs WHERE ref_id IN (" + strings.Join(placeholders, ",") + ")")
 			if _, err := db.ExecI(ctx, query, args...); err != nil {
 				log.Errorw("failed to delete non-finalized uploads", "error", err)
 			}
