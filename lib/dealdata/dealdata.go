@@ -18,6 +18,7 @@ import (
 	"github.com/filecoin-project/go-padreader"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ffi"
 	"github.com/filecoin-project/curio/lib/filler"
@@ -50,7 +51,7 @@ type DealData struct {
 	Close        func()
 }
 
-func DealDataSDRPoRep(ctx context.Context, db *harmonydb.DB, sc *ffi.SealCalls, spId, sectorNumber int64, spt abi.RegisteredSealProof, commDOnly bool) (*DealData, error) {
+func DealDataSDRPoRep(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.SealCalls, spId, sectorNumber int64, spt abi.RegisteredSealProof, commDOnly bool) (*DealData, error) {
 	var pieces []dealMetadata
 	err := db.Select(ctx, &pieces, `
 		SELECT piece_index, piece_cid, piece_size, data_url, data_headers, data_raw_size, data_delete_on_finalize
@@ -63,7 +64,7 @@ func DealDataSDRPoRep(ctx context.Context, db *harmonydb.DB, sc *ffi.SealCalls, 
 	return getDealMetadata(ctx, db, sc, spt, pieces, commDOnly)
 }
 
-func DealDataSnap(ctx context.Context, db *harmonydb.DB, sc *ffi.SealCalls, spId, sectorNumber int64, spt abi.RegisteredSealProof) (*DealData, error) {
+func DealDataSnap(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.SealCalls, spId, sectorNumber int64, spt abi.RegisteredSealProof) (*DealData, error) {
 	var pieces []dealMetadata
 	err := db.Select(ctx, &pieces, `
 		SELECT piece_index, piece_cid, piece_size, data_url, data_headers, data_raw_size, data_delete_on_finalize
@@ -76,7 +77,7 @@ func DealDataSnap(ctx context.Context, db *harmonydb.DB, sc *ffi.SealCalls, spId
 	return getDealMetadata(ctx, db, sc, spt, pieces, false)
 }
 
-func UnsealedCidFromPieces(ctx context.Context, db *harmonydb.DB, spId, sectorNumber int64) (cid.Cid, error) {
+func UnsealedCidFromPieces(ctx context.Context, db harmonyquery.DBInterface, spId, sectorNumber int64) (cid.Cid, error) {
 	var sectorParams []struct {
 		RegSealProof int64 `db:"reg_seal_proof"`
 	}
@@ -121,7 +122,7 @@ func UnsealedCidFromPieces(ctx context.Context, db *harmonydb.DB, spId, sectorNu
 	return dd.CommD, nil
 }
 
-func getDealMetadata(ctx context.Context, db *harmonydb.DB, sc *ffi.SealCalls, spt abi.RegisteredSealProof, pieces []dealMetadata, commDOnly bool) (*DealData, error) {
+func getDealMetadata(ctx context.Context, db harmonyquery.DBInterface, sc *ffi.SealCalls, spt abi.RegisteredSealProof, pieces []dealMetadata, commDOnly bool) (*DealData, error) {
 	ssize, err := spt.SectorSize()
 	if err != nil {
 		return nil, xerrors.Errorf("getting sector size: %w", err)

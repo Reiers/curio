@@ -37,6 +37,7 @@ import (
 	"github.com/filecoin-project/curio/api"
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/pieceprovider"
 	"github.com/filecoin-project/curio/lib/urlhelper"
@@ -80,7 +81,7 @@ type peerInfo struct {
 // Provider represents a provider for IPNI.
 type Provider struct {
 	full          api.Chain
-	db            *harmonydb.DB
+	db            harmonyquery.DBInterface
 	pieceProvider *pieceprovider.SectorReader
 	indexStore    *indexstore.IndexStore
 	sc            *chunker.ServeChunker
@@ -536,7 +537,7 @@ func (p *Provider) logPDPFetch(peer, b string) {
 		return
 	}
 	logCtx := context.Background()
-	_, err := p.db.Exec(logCtx, `INSERT INTO ipni_ad_fetches (ad_cid, fetched_at) VALUES ($1, NOW())`, b)
+	_, err := p.db.ExecI(logCtx, `INSERT INTO ipni_ad_fetches (ad_cid, fetched_at) VALUES ($1, NOW())`, b)
 	if err != nil {
 		log.Warnw("failed to log ad fetch", "ad_cid", b, "err", err)
 	}

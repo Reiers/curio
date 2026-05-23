@@ -25,6 +25,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-padreader"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/cachedreader"
 	"github.com/filecoin-project/curio/lib/commcidv2"
@@ -92,7 +93,7 @@ func (v *entryCacheValue) speculativeUnused() bool {
 }
 
 type ServeChunker struct {
-	db            *harmonydb.DB
+	db            harmonyquery.DBInterface
 	pieceProvider *pieceprovider.SectorReader
 	indexStore    *indexstore.IndexStore
 	cpr           *cachedreader.CachedPieceReader
@@ -107,7 +108,7 @@ type ServeChunker struct {
 // This cache is only useful in the edge case when entry reads are very slow and time out - this makes retried reads faster
 const EntryCacheSize = 20
 
-func NewServeChunker(db *harmonydb.DB, pieceProvider *pieceprovider.SectorReader, indexStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader) *ServeChunker {
+func NewServeChunker(db harmonyquery.DBInterface, pieceProvider *pieceprovider.SectorReader, indexStore *indexstore.IndexStore, cpr *cachedreader.CachedPieceReader) *ServeChunker {
 	return &ServeChunker{
 		db:            db,
 		pieceProvider: pieceProvider,

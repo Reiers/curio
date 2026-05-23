@@ -9,6 +9,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 )
 
@@ -22,7 +23,7 @@ var activePieceIndexKnownValid atomic.Bool
 // missing or INVALID, this avoids ON CONFLICT entirely and uses the degraded
 // check-then-insert fallback; that fallback can race and create duplicates
 // until FixParkPieceTask repairs the table/index.
-func Upsert(tx *harmonydb.Tx, pieceCID string, paddedSize, rawSize int64, longTerm bool) (int64, error) {
+func Upsert(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize int64, longTerm bool) (int64, error) {
 	indexValid, err := ActiveIndexValid(tx)
 	if err != nil {
 		return 0, xerrors.Errorf("checking parked_pieces_active_piece_key: %w", err)
@@ -50,7 +51,7 @@ func Upsert(tx *harmonydb.Tx, pieceCID string, paddedSize, rawSize int64, longTe
 // flag is intentionally insert-only: if the piece already exists, both the
 // valid-index path and fallback path return the existing id without changing
 // the existing row's skip or raw-size metadata.
-func UpsertSkip(tx *harmonydb.Tx, pieceCID string, paddedSize, rawSize int64, longTerm, skip bool) (int64, error) {
+func UpsertSkip(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize int64, longTerm, skip bool) (int64, error) {
 	indexValid, err := ActiveIndexValid(tx)
 	if err != nil {
 		return 0, xerrors.Errorf("checking parked_pieces_active_piece_key: %w", err)
@@ -80,7 +81,7 @@ func UpsertSkip(tx *harmonydb.Tx, pieceCID string, paddedSize, rawSize int64, lo
 // There is deliberately no lock here; callers accept the same temporary
 // duplicate risk that the cleanup task is responsible for repairing. skip is
 // applied only to the inserted row.
-func upsertFallback(tx *harmonydb.Tx, pieceCID string, paddedSize, rawSize int64, longTerm bool, skip *bool) (int64, error) {
+func upsertFallback(tx harmonyquery.TxInterface, pieceCID string, paddedSize, rawSize int64, longTerm bool, skip *bool) (int64, error) {
 	var id int64
 	err := tx.QueryRow(`
 		SELECT id FROM parked_pieces
@@ -115,7 +116,7 @@ func upsertFallback(tx *harmonydb.Tx, pieceCID string, paddedSize, rawSize int64
 // calls skip the catalog lookup. Missing, invalid, or wrongly-shaped states are
 // rechecked on every call so a repair that drops/recreates the index can be
 // observed without restarting the process.
-func ActiveIndexValid(tx *harmonydb.Tx) (bool, error) {
+func ActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 	if activePieceIndexKnownValid.Load() {
 		return true, nil
 	}
@@ -129,7 +130,7 @@ func ActiveIndexValid(tx *harmonydb.Tx) (bool, error) {
 // refreshes the positive cache; a false result clears a stale positive cache
 // but is still not a negative cache because ActiveIndexValid will requery while
 // the flag is false.
-func RefreshActiveIndexValid(tx *harmonydb.Tx) (bool, error) {
+func RefreshActiveIndexValid(tx harmonyquery.TxInterface) (bool, error) {
 	var exists bool
 	err := tx.QueryRow(`
 		SELECT EXISTS (

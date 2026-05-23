@@ -13,6 +13,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/market/ipni/ipniculib"
 )
@@ -123,7 +124,7 @@ func (c *InitialChunker) chunk() error {
 	return nil
 }
 
-func (c *InitialChunker) Finish(ctx context.Context, db *harmonydb.DB, pieceCid cid.Cid, isPDP bool) (ipld.Link, error) {
+func (c *InitialChunker) Finish(ctx context.Context, db harmonyquery.DBInterface, pieceCid cid.Cid, isPDP bool) (ipld.Link, error) {
 	defer func() {
 		took := time.Since(c.start)
 		ingestedPerSec := float64(c.ingestedSoFar) / took.Seconds()
@@ -140,7 +141,7 @@ func (c *InitialChunker) Finish(ctx context.Context, db *harmonydb.DB, pieceCid 
 	return c.finishDB(ctx, db, pieceCid, isPDP)
 }
 
-func (c *InitialChunker) finishDB(ctx context.Context, db *harmonydb.DB, pieceCid cid.Cid, isPDP bool) (ipld.Link, error) {
+func (c *InitialChunker) finishDB(ctx context.Context, db harmonyquery.DBInterface, pieceCid cid.Cid, isPDP bool) (ipld.Link, error) {
 	if db == nil {
 		// dry run mode, just log chunk hashes
 		for i, chunk := range c.prevChunks {
@@ -150,7 +151,7 @@ func (c *InitialChunker) finishDB(ctx context.Context, db *harmonydb.DB, pieceCi
 		return nil, nil
 	}
 
-	commit, err := db.BeginTransaction(context.Background(), func(tx *harmonydb.Tx) (bool, error) {
+	commit, err := db.BeginTransaction(context.Background(), func(tx harmonyquery.TxInterface) (bool, error) {
 		batch := &pgx.Batch{}
 
 		// Queue insert statements into the batch

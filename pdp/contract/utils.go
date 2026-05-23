@@ -24,6 +24,7 @@ import (
 	"github.com/filecoin-project/go-state-types/big"
 	"github.com/filecoin-project/go-state-types/builtin"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/lib/ethchain"
 
@@ -236,7 +237,7 @@ func GetDataSetMetadataAtKey(ctx context.Context, listenerAddr common.Address, e
 	return out.Exists, out.Value, nil
 }
 
-func FSRegister(ctx context.Context, db *harmonydb.DB, full api.FullNode, ethClient ethchain.EthClient, name, description string, pdpOffering PDPOfferingData, capabilities map[string]string) error {
+func FSRegister(ctx context.Context, db harmonyquery.DBInterface, full api.FullNode, ethClient ethchain.EthClient, name, description string, pdpOffering PDPOfferingData, capabilities map[string]string) error {
 	if len(name) > 128 {
 		return xerrors.Errorf("name is too long, max 128 characters allowed")
 	}
@@ -326,7 +327,7 @@ func FSRegister(ctx context.Context, db *harmonydb.DB, full api.FullNode, ethCli
 	return nil
 }
 
-func getSender(ctx context.Context, db *harmonydb.DB) (common.Address, address.Address, *ecdsa.PrivateKey, error) {
+func getSender(ctx context.Context, db harmonyquery.DBInterface) (common.Address, address.Address, *ecdsa.PrivateKey, error) {
 	// Fetch the private key from the database
 	var privateKeyData []byte
 	err := db.QueryRow(ctx,
@@ -418,7 +419,7 @@ func createSignedTransaction(ctx context.Context, ethClient ethchain.EthClient, 
 	return signedTx, nil
 }
 
-func FSUpdateProvider(ctx context.Context, name, description string, db *harmonydb.DB, ethClient ethchain.EthClient) (string, error) {
+func FSUpdateProvider(ctx context.Context, name, description string, db harmonyquery.DBInterface, ethClient ethchain.EthClient) (string, error) {
 	if len(name) > 128 {
 		return "", xerrors.Errorf("name is too long, max 128 characters allowed")
 	}
@@ -464,7 +465,7 @@ func FSUpdateProvider(ctx context.Context, name, description string, db *harmony
 	return signedTx.Hash().String(), nil
 }
 
-func FSUpdatePDPService(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient, pdpOffering PDPOfferingData, capabilities map[string]string) (string, error) {
+func FSUpdatePDPService(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pdpOffering PDPOfferingData, capabilities map[string]string) (string, error) {
 	// Convert PDPOffering to capability keys/values
 	keys, values, err := OfferingToCapabilities(pdpOffering, capabilities)
 	if err != nil {
@@ -520,7 +521,7 @@ func FSUpdatePDPService(ctx context.Context, db *harmonydb.DB, ethClient ethchai
 	return signedTx.Hash().String(), nil
 }
 
-func FSDeregisterProvider(ctx context.Context, db *harmonydb.DB, ethClient ethchain.EthClient) (string, error) {
+func FSDeregisterProvider(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) (string, error) {
 	sender, _, privateKey, err := getSender(ctx, db)
 	if err != nil {
 		return "", xerrors.Errorf("failed to get sender: %w", err)
