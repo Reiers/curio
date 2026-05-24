@@ -453,6 +453,23 @@ func (e *TaskEngine) pollerTryAllWork(taskSource taskSource, eventEmitter eventE
 		if capacity, err := v.AssertMachineHasCapacity(); err != nil || capacity == 0 {
 			if err != nil {
 				log.Debugf("skipped scheduling %s type tasks due to %s", v.Name, err.Error())
+
+				// If unowned tasks are waiting on a resource rejection,
+				// surface that at WARN so operators can see the silent
+				// stuck-task condition (curio-core#56 hit this live:
+				// task 243 sat in harmony_task for 5 min with no
+				// diagnostic because the rejection was silent at DEBUG).
+				// Rate-limited per task type so a sustained stuck
+				// condition doesn't spam logs every poll cycle.
+				if len(taskSource.GetTasks(v.Name)) > 0 &&
+					time.Since(v.lastInsufficientWarn) > insufficientWarnInterval {
+					log.Warnw("task waiting but machine cannot accept it",
+						"task_type", v.Name,
+						"reason", err.Error(),
+						"waiting_count", len(taskSource.GetTasks(v.Name)),
+						"hint", "check engine resource budget vs task Cost (Cpu/Ram/Gpu) or task Max limit")
+					v.lastInsufficientWarn = time.Now()
+				}
 			}
 			continue
 		}

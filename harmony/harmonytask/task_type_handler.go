@@ -51,6 +51,14 @@ type taskTypeHandler struct {
 	// safe without a mutex.
 	storageFailures map[TaskID]time.Time
 
+	// lastInsufficientWarn rate-limits the WARN that fires when this task
+	// type has unowned tasks waiting but the machine cannot accept them
+	// (out of CPU/RAM/GPU, or Max already reached). Without rate-limiting
+	// the WARN fires every ~3s on every poll cycle a stuck task is in DB.
+	// Set when WARN fires; subsequent identical rejections within
+	// insufficientWarnInterval get suppressed.
+	lastInsufficientWarn time.Time
+
 	// --- concurrent state, encapsulated behind typed APIs ---
 	//
 	// The mutex and backing store for each of these lives inside an internal
@@ -64,6 +72,14 @@ type taskTypeHandler struct {
 // valid. After this duration, the cache is discarded and CanAccept is called
 // fresh. This balances DB load reduction against decision freshness.
 const canAcceptCacheTTL = 60 * time.Second
+
+// insufficientWarnInterval is the rate limit for the WARN that fires when
+// unowned tasks are waiting but the machine cannot accept them (resource
+// rejection). Without rate-limiting, every poll cycle (~3s) re-emits the
+// same WARN. 5 minutes is short enough to surface a real misconfiguration
+// promptly, long enough to keep logs readable on a sustained stuck-task
+// condition. See harmonytask.go schedule() for the call site.
+const insufficientWarnInterval = 5 * time.Minute
 
 // storageFailureTimeout prevents repeatedly trying to claim storage for a
 // task that just failed storage allocation. The task is retried after this
