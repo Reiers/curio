@@ -285,7 +285,7 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 			WHERE id = $1
 		`, dataSetIdUint64).Scan(&dataSetService, &unrecoverable)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			httpServerError(w, http.StatusNotFound, "Data set not found", err)
 			return
 		}

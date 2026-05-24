@@ -88,7 +88,7 @@ func (p *PDPService) handlePiecePost(w http.ResponseWriter, r *http.Request) {
 		// pgx.ErrNoRows on Postgres, sql.ErrNoRows on SQLite, or the literal
 		// 'sql: no rows in result set' text — all mean 'no existing piece,
 		// proceed to the create-upload path.'
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, sql.ErrNoRows) && err.Error() != "sql: no rows in result set" {
+		if err != nil && !isNoRows(err) {
 			return false, fmt.Errorf("failed to query parked_pieces: %w", err)
 		}
 		log.Debugw("[handlePiecePost] -- parked piece check done", "pieceCidV2", pieceCidV2)
@@ -189,7 +189,7 @@ func (p *PDPService) handlePieceUpload(w http.ResponseWriter, r *http.Request) {
         SELECT piece_cid, notify_url, piece_ref, check_size FROM pdp_piece_uploads WHERE id = $1
     `, uploadUUID.String()).Scan(&pieceCIDStr, &notifyURL, &pieceRef, &checkSize)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			httpServerError(w, http.StatusNotFound, "Upload UUID not found", err)
 		} else {
 			httpServerError(w, http.StatusInternalServerError, "Database error", err)

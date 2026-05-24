@@ -44,6 +44,23 @@ func httpServerError(w http.ResponseWriter, statusCode int, msg string, err erro
 	http.Error(w, fmt.Sprintf("%s [eid: %s]", msg, eid), statusCode)
 }
 
+// isNoRows recognizes the "no row returned" signal on both supported
+// backends: pgx.ErrNoRows on Postgres/Yugabyte, sql.ErrNoRows on
+// database/sql (modernc.org/sqlite). Includes the literal error string
+// fallback for paths where the error has been wrapped past errors.Is
+// detection.
+//
+// Centralised here so the 100+ pgx-only check sites across pdp/ can
+// migrate cleanly. Sweep follows the synapse-sdk compat test scope.
+func isNoRows(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, pgx.ErrNoRows) ||
+		errors.Is(err, sql.ErrNoRows) ||
+		strings.Contains(err.Error(), "no rows in result set")
+}
+
 // PDPRoutePath is the base path for PDP routes
 const PDPRoutePath = "/pdp"
 
@@ -437,7 +454,7 @@ func (p *PDPService) getSenderAddress(ctx context.Context) (common.Address, erro
 	var addressStr string
 	err := p.db.QueryRowI(ctx, `SELECT address FROM eth_keys WHERE role = 'pdp' LIMIT 1`).Scan(&addressStr)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			return common.Address{}, errors.New("no sender address with role 'pdp' found")
 		}
 		return common.Address{}, err
@@ -498,7 +515,7 @@ func (p *PDPService) handleGetDataSetCreationStatus(w http.ResponseWriter, r *ht
         WHERE create_message_hash = $1
     `, txHash).Scan(&dataSetCreate.CreateMessageHash, &dataSetCreate.OK, &dataSetCreate.DataSetCreated, &dataSetCreate.Service)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			http.Error(w, "Data set creation not found for given txHash", http.StatusNotFound)
 			return
 		}
@@ -535,7 +552,7 @@ func (p *PDPService) handleGetDataSetCreationStatus(w http.ResponseWriter, r *ht
         WHERE signed_tx_hash = $1
     `, txHash).Scan(&txStatus)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			// This should not happen as per foreign key constraints
 			http.Error(w, "Message status not found for given txHash", http.StatusInternalServerError)
 			return
@@ -555,7 +572,7 @@ func (p *PDPService) handleGetDataSetCreationStatus(w http.ResponseWriter, r *ht
             WHERE create_message_hash = $1
         `, txHash).Scan(&dataSetId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if isNoRows(err) {
 				// Should not happen, but handle gracefully
 				http.Error(w, "Data set not found despite data_set_created = true", http.StatusInternalServerError)
 				return
@@ -619,7 +636,7 @@ func (p *PDPService) handleGetDataSet(w http.ResponseWriter, r *http.Request) {
         WHERE id = $1
     `, dataSetId).Scan(&dataSet.ID, &dataSet.Service)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			http.Error(w, "Data set not found", http.StatusNotFound)
 			return
 		}
@@ -819,7 +836,7 @@ func (p *PDPService) handleGetPieceAdditionStatus(w http.ResponseWriter, r *http
 		WHERE id = $1
 	`, dataSetId).Scan(&dataSetService)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			http.Error(w, "Data set not found", http.StatusNotFound)
 			return
 		}
@@ -868,7 +885,7 @@ func (p *PDPService) handleGetPieceAdditionStatus(w http.ResponseWriter, r *http
 		SELECT tx_status FROM message_waits_eth WHERE signed_tx_hash = $1
 	`, txHash).Scan(&txStatus)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			http.Error(w, "Transaction status not found", http.StatusNotFound)
 			return
 		}
@@ -989,7 +1006,7 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 			WHERE id = $1
 		`, dataSetId).Scan(&dataSetService)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			http.Error(w, "Data set not found", http.StatusNotFound)
 			return
 		}
@@ -1180,7 +1197,7 @@ func (p *PDPService) handleGetDataSetPiece(w http.ResponseWriter, r *http.Reques
 		WHERE r.data_set = $1 AND r.piece_id = $2 AND ps.service = $3
 	`, dataSetId, pieceID, serviceLabel).Scan(&pieceCid)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if isNoRows(err) {
 			http.Error(w, "Piece not found", http.StatusNotFound)
 			return
 		}
