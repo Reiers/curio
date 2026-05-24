@@ -3,7 +3,9 @@ package pdpv0
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math/big"
+	"strings"
 
 	"golang.org/x/xerrors"
 
@@ -16,6 +18,17 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
+type pendingServiceTermination struct {
+	DataSetId int64  `db:"id"`
+	TxHash    string `db:"terminate_tx_hash"`
+}
+
+type serviceTerminationMessageWait struct {
+	TxHash  string       `db:"signed_tx_hash"`
+	Status  string       `db:"tx_status"`
+	Success sql.NullBool `db:"tx_success"`
+}
+
 // NewTerminateServiceWatcher registers a tipset handler that reconciles
 // pdp_delete_data_set termination tx state against on-chain receipts.
 // network selects the on-chain FWSS contract address; pass the empty
@@ -25,7 +38,7 @@ func NewTerminateServiceWatcher(db harmonyquery.DBInterface, ethClient ethchain.
 		network = contract.NetworkFromBuildType()
 	}
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
-		err := processPendingTerminations(ctx, network, db, ethClient)
+		err := processTerminations(ctx, network, db, ethClient)
 		if err != nil {
 			log.Warnf("Failed to process pending service termination transactions: %s", err)
 		}
@@ -35,27 +48,88 @@ func NewTerminateServiceWatcher(db harmonyquery.DBInterface, ethClient ethchain.
 	}
 }
 
-func processPendingTerminations(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
-
-	var details []struct {
-		DataSetId int64        `db:"id"`
-		TxHash    string       `db:"terminate_tx_hash"`
-		Success   sql.NullBool `db:"tx_success"`
-	}
-
-	err := db.SelectI(ctx, &details, `SELECT 
-    										pdds.id, 
-    										pdds.terminate_tx_hash,
-    										mwe.tx_success
-										FROM pdp_delete_data_set pdds
-										LEFT JOIN message_waits_eth mwe ON mwe.signed_tx_hash = pdds.terminate_tx_hash
-										WHERE pdds.service_termination_epoch IS NULL 
-										  AND pdds.after_terminate_service = TRUE`)
+func processTerminations(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
+	var pending []pendingServiceTermination
+	err := db.SelectI(ctx, &pending, `
+		SELECT id, terminate_tx_hash
+		FROM pdp_delete_data_set
+		WHERE service_termination_epoch IS NULL
+		  AND after_terminate_service = TRUE
+		  AND terminate_tx_hash IS NOT NULL
+	`)
 	if err != nil {
-		return xerrors.Errorf("failed to select pending data sets: %w", err)
+		return xerrors.Errorf("failed to select pending data set terminations: %w", err)
 	}
 
-	if len(details) == 0 {
+	if len(pending) == 0 {
+		return nil
+	}
+
+	byHash := make(map[string]pendingServiceTermination, len(pending))
+	hashes := make([]string, 0, len(pending))
+	for _, detail := range pending {
+		hashes = append(hashes, detail.TxHash)
+		byHash[detail.TxHash] = detail
+	}
+
+	// SQLite portability: rewrite `WHERE signed_tx_hash = ANY($1)` (Postgres
+	// TEXT[]) to `WHERE signed_tx_hash IN ($1, $2, ...)` with placeholder
+	// expansion. Mirrors the pattern used in pdp/handlers.go and
+	// pdp/handlers_pull.go for the same reason.
+	placeholders := make([]string, len(hashes))
+	args := make([]any, len(hashes))
+	for i, h := range hashes {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = h
+	}
+	waitsQuery := harmonyquery.RawString(
+		"SELECT signed_tx_hash, tx_status, tx_success FROM message_waits_eth WHERE signed_tx_hash IN (" +
+			strings.Join(placeholders, ",") + ")",
+	)
+
+	var waits []serviceTerminationMessageWait
+	err = db.SelectI(ctx, &waits, waitsQuery, args...)
+	if err != nil {
+		return xerrors.Errorf("failed to select service termination message waits: %w", err)
+	}
+
+	seen := map[string]struct{}{}
+	var successes []pendingServiceTermination
+	var failures []pendingServiceTermination
+	for _, wait := range waits {
+		seen[wait.TxHash] = struct{}{}
+		detail, ok := byHash[wait.TxHash]
+		if !ok {
+			continue
+		}
+
+		if wait.Status == "confirmed" && wait.Success.Valid && wait.Success.Bool {
+			successes = append(successes, detail)
+			continue
+		}
+
+		if wait.Status == "failed" || (wait.Status == "confirmed" && wait.Success.Valid && !wait.Success.Bool) {
+			failures = append(failures, detail)
+		}
+	}
+
+	for _, detail := range pending {
+		if _, ok := seen[detail.TxHash]; ok {
+			continue
+		}
+		log.Warnw("filecoin warm storage service termination tx missing message_waits_eth row", "txHash", detail.TxHash, "dataSetId", detail.DataSetId)
+	}
+
+	successErr := processSuccessfulTerminations(ctx, network, db, ethClient, successes)
+	failureErr := processFailedTerminations(ctx, db, failures)
+	if successErr != nil {
+		return successErr
+	}
+	return failureErr
+}
+
+func processSuccessfulTerminations(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient, successes []pendingServiceTermination) error {
+	if len(successes) == 0 {
 		return nil
 	}
 
@@ -69,16 +143,7 @@ func processPendingTerminations(ctx context.Context, network contract.Network, d
 		return xerrors.Errorf("failed to instantiate FWSS service state view: %w", err)
 	}
 
-	for _, detail := range details {
-		if !detail.Success.Valid {
-			log.Debugw("filecoin warm storage service termination tx not yet mined", "txHash", detail.TxHash, "dataSetId", detail.DataSetId)
-			continue
-		}
-
-		if !detail.Success.Bool {
-			return xerrors.Errorf("filecoin warm storage service termination tx %s failed for data set %d", detail.TxHash, detail.DataSetId)
-		}
-
+	for _, detail := range successes {
 		ds, err := fwssv.GetDataSet(contract.EthCallOpts(ctx), big.NewInt(detail.DataSetId))
 		if err != nil {
 			return xerrors.Errorf("failed to get data set %d: %w", detail.DataSetId, err)
@@ -100,5 +165,27 @@ func processPendingTerminations(ctx context.Context, network contract.Network, d
 
 		log.Infow("Successfully confirmed data set termination", "dataSetId", detail.DataSetId, "epoch", ds.PdpEndEpoch.Int64(), "txHash", detail.TxHash)
 	}
+	return nil
+}
+
+func processFailedTerminations(ctx context.Context, db harmonyquery.DBInterface, failures []pendingServiceTermination) error {
+	for _, detail := range failures {
+		_, err := db.ExecI(ctx, `
+			UPDATE pdp_delete_data_set
+			SET terminate_tx_hash = NULL,
+			    after_terminate_service = FALSE,
+			    terminate_service_task_id = NULL
+			WHERE id = $1
+			  AND terminate_tx_hash = $2
+			  AND after_terminate_service = TRUE
+			  AND service_termination_epoch IS NULL
+		`, detail.DataSetId, detail.TxHash)
+		if err != nil {
+			return xerrors.Errorf("failed to reset failed service termination for data set %d: %w", detail.DataSetId, err)
+		}
+
+		log.Warnw("reset failed provider service termination for retry", "dataSetId", detail.DataSetId, "txHash", detail.TxHash)
+	}
+
 	return nil
 }
