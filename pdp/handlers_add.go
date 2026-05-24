@@ -16,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/go-chi/chi/v5"
 	"github.com/ipfs/go-cid"
-	"github.com/yugabyte/pgx/v5"
 
 	commputils "github.com/filecoin-project/go-commp-utils/v2"
 	commcid "github.com/filecoin-project/go-fil-commcid"

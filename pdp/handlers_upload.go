@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +18,6 @@ import (
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/multiformats/go-multicodec"
 	"github.com/multiformats/go-multihash"
-	"github.com/yugabyte/pgx/v5"
 
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	commp "github.com/filecoin-project/go-fil-commp-hashhash"
