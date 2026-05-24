@@ -91,10 +91,12 @@ func sweepOrphanedProvableDataSets(ctx context.Context, db harmonyquery.DBInterf
 		ProveAtEpoch int64 `db:"prove_at_epoch"`
 	}
 	var orphans []orphan
-	// pdp_prove_tasks uses the legacy column name `proofset` (not
-	// `data_set_id`) from the v1 schema; this name is preserved across
-	// the v0 rename because the column references the on-chain id, not
-	// the renamed pdp_data_sets.id. Verified live on calibration.
+	// pdp_prove_tasks.data_set is the v0-renamed column (upstream
+	// 20250730-pdp-v0-rename.sql line 63 renamed proofset -> data_set
+	// alongside the pdp_proof_sets -> pdp_data_sets table rename).
+	// Earlier comment in this file was wrong; verified live on
+	// calibration when the upstream INSERT INTO pdp_prove_tasks
+	// (data_set, task_id) tripped over our legacy column name.
 	err := db.SelectI(ctx, &orphans, `
 		SELECT p.id, p.prove_at_epoch
 		FROM pdp_data_sets p
@@ -103,7 +105,7 @@ func sweepOrphanedProvableDataSets(ctx context.Context, db harmonyquery.DBInterf
 		  AND p.init_ready = 1
 		  AND p.unrecoverable_proving_failure_epoch IS NULL
 		  AND NOT EXISTS (
-		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.proofset = p.id
+		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.data_set = p.id
 		  )
 	`)
 	if err != nil {
@@ -132,7 +134,7 @@ func sweepOrphanedProvableDataSets(ctx context.Context, db harmonyquery.DBInterf
 		  AND init_ready = 1
 		  AND unrecoverable_proving_failure_epoch IS NULL
 		  AND NOT EXISTS (
-		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.proofset = pdp_data_sets.id
+		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.data_set = pdp_data_sets.id
 		  )
 	`)
 	return err
