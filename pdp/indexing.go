@@ -2,8 +2,10 @@ package pdp
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"slices"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 
@@ -130,6 +132,12 @@ func CheckIfIndexingNeededFromExtraData(extraData []byte) (bool, error) {
 }
 
 // EnableIndexingForPiecesInTx marks the specified piecerefs as needing indexing within a transaction.
+//
+// SQLite portability: rewritten from `WHERE id = ANY($2)` (Postgres BIGINT[])
+// to `WHERE id IN ($2, $3, ...)` with placeholder expansion. SQLite has no
+// array type and database/sql can't bind []int64; both backends accept the
+// IN-list shape. Same pattern as the d978fd3 claim-query and the 3b77fde
+// pdp/handlers_add.go subPieces validation.
 func EnableIndexingForPiecesInTx(
 	tx harmonyquery.TxInterface,
 	serviceLabel string,
@@ -139,12 +147,23 @@ func EnableIndexingForPiecesInTx(
 		"serviceLabel", serviceLabel,
 		"subPieceCount", len(subPieceRefIDs))
 
-	_, err := tx.ExecI(`
+	if len(subPieceRefIDs) == 0 {
+		return nil
+	}
+
+	phList := make([]string, len(subPieceRefIDs))
+	args := make([]any, 0, 1+len(subPieceRefIDs))
+	args = append(args, serviceLabel)
+	for i, id := range subPieceRefIDs {
+		phList[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+	_, err := tx.ExecI(harmonyquery.RawString(`
 		UPDATE pdp_piecerefs
 		SET needs_indexing = TRUE
 		WHERE service = $1
-			AND id = ANY($2)
+			AND id IN (`+strings.Join(phList, ", ")+`)
 			AND needs_indexing = FALSE
-	`, serviceLabel, subPieceRefIDs)
+	`), args...)
 	return err
 }

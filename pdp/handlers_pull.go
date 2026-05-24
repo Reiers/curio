@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strings"
+
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -719,10 +721,24 @@ func (s *dbPullStore) GetPieceStatuses(ctx context.Context, pieceCids []cid.Cid)
 		return make(map[string]*PieceStatus), nil
 	}
 
-	// Build array of CID strings for batch query
+	// Build array of CID strings for batch query.
+	//
+	// SQLite portability: rewritten from `WHERE piece_cid = ANY($1)`
+	// (Postgres TEXT[]) to `WHERE piece_cid IN ($1, $2, ...)` with
+	// placeholder expansion. database/sql can't bind []string and
+	// SQLite has no array type; both backends accept the IN-list shape.
+	// Same pattern as the d978fd3 claim-query, 3b77fde handlers_add.go
+	// subPieces validation, and indexing.go EnableIndexingForPiecesInTx.
+	if len(pieceCids) == 0 {
+		return map[string]*PieceStatus{}, nil
+	}
 	cidStrs := make([]string, len(pieceCids))
+	phList := make([]string, len(pieceCids))
+	args := make([]any, 0, len(pieceCids))
 	for i, c := range pieceCids {
 		cidStrs[i] = c.String()
+		phList[i] = fmt.Sprintf("$%d", i+1)
+		args = append(args, cidStrs[i])
 	}
 
 	var pieces []struct {
@@ -733,15 +749,14 @@ func (s *dbPullStore) GetPieceStatuses(ctx context.Context, pieceCids []cid.Cid)
 		Retries    int    `db:"retries"`
 	}
 
-	// Batch query with ANY() for all CIDs at once
-	err := s.db.SelectI(ctx, &pieces, `
+	err := s.db.SelectI(ctx, &pieces, harmonyquery.RawString(`
 		SELECT pp.piece_cid, pp.complete, pp.task_id,
 		       (ht.id IS NOT NULL) as task_exists,
 		       COALESCE(ht.retries, 0) as retries
 		FROM parked_pieces pp
 		LEFT JOIN harmony_task ht ON pp.task_id = ht.id
-		WHERE pp.piece_cid = ANY($1) AND pp.long_term = TRUE AND pp.cleanup_task_id IS NULL
-	`, cidStrs)
+		WHERE pp.piece_cid IN (`+strings.Join(phList, ", ")+`) AND pp.long_term = TRUE AND pp.cleanup_task_id IS NULL
+	`), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query piece statuses: %w", err)
 	}
