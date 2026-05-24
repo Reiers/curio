@@ -43,7 +43,7 @@ type CachedPieceReader struct {
 	db harmonyquery.DBInterface
 
 	sectorReader    *pieceprovider.SectorReader
-	pieceParkReader *pieceprovider.PieceParkReader
+	pieceParkReader pieceprovider.PieceParkBackend
 
 	idxStor indexstore.Backend
 
@@ -53,7 +53,7 @@ type CachedPieceReader struct {
 	pieceErrorCache    *pieceCidKeyCache // Cache for errors (5 seconds without TTL extension)
 }
 
-func NewCachedPieceReader(db harmonyquery.DBInterface, sectorReader *pieceprovider.SectorReader, pieceParkReader *pieceprovider.PieceParkReader, idxStor indexstore.Backend) *CachedPieceReader {
+func NewCachedPieceReader(db harmonyquery.DBInterface, sectorReader *pieceprovider.SectorReader, pieceParkReader pieceprovider.PieceParkBackend, idxStor indexstore.Backend) *CachedPieceReader {
 	prCache := newPieceCidKeyCache(PieceReaderCacheTTL, MaxCachedReaders, false)  // Enable TTL extension for successful readers
 	errorCache := newPieceCidKeyCache(PieceErrorCacheTTL, MaxCachedReaders, true) // Disable TTL extension for errors
 
