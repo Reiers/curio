@@ -89,7 +89,11 @@ var _ harmonytask.TaskInterface = &TaskChainSync{}
 // schedulers can pick them up again.
 func (t *TaskChainSync) syncStaleDeletionTaskIDs(ctx context.Context) error {
 	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		terminated, err := tx.ExecI(`UPDATE pdp_delete_data_set pdds
+		// `UPDATE <table> <alias> SET ...` is Postgres-specific shorthand.
+		// SQLite (modernc.org) requires the explicit `AS` keyword between
+		// table and alias, otherwise it rejects with 'near "<alias>": syntax
+		// error'. Adding `AS` is SQL-standard and accepted by Postgres too.
+		terminated, err := tx.ExecI(`UPDATE pdp_delete_data_set AS pdds
 			SET terminate_service_task_id = NULL
 			WHERE pdds.terminate_service_task_id IS NOT NULL
 			  AND pdds.after_terminate_service = FALSE
@@ -102,7 +106,7 @@ func (t *TaskChainSync) syncStaleDeletionTaskIDs(ctx context.Context) error {
 			return false, xerrors.Errorf("failed to clear stale terminate service task ids: %w", err)
 		}
 
-		deleted, err := tx.ExecI(`UPDATE pdp_delete_data_set pdds
+		deleted, err := tx.ExecI(`UPDATE pdp_delete_data_set AS pdds
 			SET delete_data_set_task_id = NULL
 			WHERE pdds.delete_data_set_task_id IS NOT NULL
 			  AND pdds.after_delete_data_set = FALSE
