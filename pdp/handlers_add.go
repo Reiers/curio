@@ -90,15 +90,29 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
 
 	// Start a DB transaction
 	_, err := p.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		// Step 4: Get pdp_piecerefs matching all subPiece cids + make sure those refs belong to serviceLabel
-		rows, err := tx.QueryI(`
+		// Step 4: Get pdp_piecerefs matching all subPiece cids + make sure
+		// those refs belong to serviceLabel.
+		//
+		// SQLite portability: Postgres uses
+		//   WHERE ppr.piece_cid = ANY($2)
+		// with $2 as a TEXT[]. SQLite has no array type, so we expand the
+		// list into a placeholder set: IN ($2, $3, ...). Postgres also
+		// accepts this shape, so the rewrite is dialect-portable.
+		phList := make([]string, len(subPieceCidList))
+		qArgs := make([]any, 0, 1+len(subPieceCidList))
+		qArgs = append(qArgs, serviceLabel)
+		for i, c := range subPieceCidList {
+			phList[i] = fmt.Sprintf("$%d", i+2)
+			qArgs = append(qArgs, c)
+		}
+		rows, err := tx.QueryI(harmonyquery.RawString(`
             SELECT ppr.piece_cid, ppr.id AS pdp_pieceref_id, ppr.piece_ref,
                    pp.piece_padded_size, pp.piece_raw_size
             FROM pdp_piecerefs ppr
             JOIN parked_piece_refs pprf ON pprf.ref_id = ppr.piece_ref
             JOIN parked_pieces pp ON pp.id = pprf.piece_id
-            WHERE ppr.service = $1 AND ppr.piece_cid = ANY($2)
-        `, serviceLabel, subPieceCidList)
+            WHERE ppr.service = $1 AND ppr.piece_cid IN (`+strings.Join(phList, ", ")+`)
+        `), qArgs...)
 		if err != nil {
 			return false, err
 		}
