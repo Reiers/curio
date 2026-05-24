@@ -109,6 +109,15 @@ type PDPService struct {
 // with the per-network build tag don't need to call this.
 func (p *PDPService) SetNetwork(n contract.Network) {
 	p.network = n
+	// Propagate to the pull validator + pull handler so eth_call
+	// validation and recordKeeper whitelist checks for /pdp/piece/pull
+	// resolve against the same network the data-set endpoints use.
+	if p.pullHandler != nil {
+		p.pullHandler.SetNetwork(n)
+		if v, ok := p.pullHandler.validator.(*EthCallValidator); ok && v != nil {
+			v.SetNetwork(n)
+		}
+	}
 }
 
 // Network returns the currently-configured network. Falls back to

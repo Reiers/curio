@@ -128,11 +128,27 @@ type EthCallValidator struct {
 	ethClient  ethchain.EthClient
 	db         harmonyquery.DBInterface
 	senderAddr common.Address // cached, lazily loaded
+	network    contract.Network
 }
 
-// NewEthCallValidator creates a validator that uses eth_call
+// NewEthCallValidator creates a validator that uses eth_call. Pass an
+// empty network string to fall back to contract.NetworkFromBuildType().
 func NewEthCallValidator(ethClient ethchain.EthClient, db harmonyquery.DBInterface) *EthCallValidator {
 	return &EthCallValidator{ethClient: ethClient, db: db}
+}
+
+// SetNetwork overrides which network's PDPVerifier address the
+// validator's eth_call targets. Must be called before ValidateAddPieces;
+// safe at construction time.
+func (v *EthCallValidator) SetNetwork(n contract.Network) {
+	v.network = n
+}
+
+func (v *EthCallValidator) resolvedNetwork() contract.Network {
+	if v.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return v.network
 }
 
 func (v *EthCallValidator) ValidateAddPieces(ctx context.Context, params *AddPiecesValidatorParams) error {
@@ -168,7 +184,7 @@ func (v *EthCallValidator) ValidateAddPieces(ctx context.Context, params *AddPie
 	value := big.NewInt(0)
 	msg := ethereum.CallMsg{
 		From:  v.senderAddr,
-		To:    new(contract.ContractAddressesFor(p.Network()).PDPVerifier),
+		To:    new(contract.ContractAddressesFor(v.resolvedNetwork()).PDPVerifier),
 		Data:  data,
 		Value: value,
 	}
@@ -186,15 +202,31 @@ type PullHandler struct {
 	auth      Auth
 	store     PullStore
 	validator AddPiecesValidator
+	network   contract.Network
 }
 
-// NewPullHandler creates a new PullHandler
+// NewPullHandler creates a new PullHandler. Pass an empty network
+// string to fall back to contract.NetworkFromBuildType().
 func NewPullHandler(auth Auth, store PullStore, validator AddPiecesValidator) *PullHandler {
 	return &PullHandler{
 		auth:      auth,
 		store:     store,
 		validator: validator,
 	}
+}
+
+// SetNetwork overrides which network the handler resolves its
+// recordKeeper whitelist against. Must be called before HandlePull;
+// safe at construction time.
+func (h *PullHandler) SetNetwork(n contract.Network) {
+	h.network = n
+}
+
+func (h *PullHandler) resolvedNetwork() contract.Network {
+	if h.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return h.network
 }
 
 // HandlePull handles POST /pdp/piece/pull requests for SP-to-SP piece pull.
@@ -338,7 +370,7 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Check recordKeeper is allowed (prevents bypass via malicious contract)
-		if contract.IsPublicService(service) && !contract.IsRecordKeeperAllowedFor(p.Network(), recordKeeperAddr) {
+		if contract.IsPublicService(service) && !contract.IsRecordKeeperAllowedFor(h.resolvedNetwork(), recordKeeperAddr) {
 			httpServerError(w, http.StatusForbidden, "recordKeeper address not allowed for public service", err)
 			return
 		}
