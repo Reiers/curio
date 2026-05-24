@@ -1,7 +1,9 @@
 package harmonytask
 
 import (
+	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +13,20 @@ import (
 	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask/internal/runnowflags"
 )
+
+// isNoRows treats pgx.ErrNoRows, database/sql.ErrNoRows, and the
+// literal modernc.org/sqlite "sql: no rows in result set" message as
+// the same "no row" signal. The pgx-only check in upstream Curio
+// misses the database/sql path that modernc takes on SQLite-backed
+// curio-core deployments. Same pattern as lib/parkpiece/upsert.go.
+func isNoRows(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, pgx.ErrNoRows) ||
+		errors.Is(err, sql.ErrNoRows) ||
+		strings.Contains(err.Error(), "no rows in result set")
+}
 
 // singletonRunNow is the package-scoped registry of per-task run-now flags.
 // The singletonRunNowPoller sets a flag when it sees a run_now_request row
@@ -60,7 +76,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 			now := time.Now()
 
 			err = tx.QueryRowI(`SELECT task_id, last_run_time, run_now_request FROM harmony_task_singletons WHERE task_name = $1`, taskName).Scan(&existingTaskID, &lastRunTime, &runNowRequest)
-			if errors.Is(err, pgx.ErrNoRows) {
+			if isNoRows(err) {
 				shouldRun = true
 			} else if err != nil {
 				return false, err
@@ -70,7 +86,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 				if existingTaskID != nil {
 					var htTaskID *int64
 					err = tx.QueryRowI(`SELECT id FROM harmony_task WHERE id = $1 AND name = $2`, existingTaskID, taskName).Scan(&htTaskID)
-					if errors.Is(err, pgx.ErrNoRows) {
+					if isNoRows(err) {
 						taskIsRunning = false
 					} else if err != nil {
 						return false, err
