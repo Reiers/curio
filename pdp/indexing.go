@@ -15,13 +15,22 @@ import (
 // CheckIfIndexingNeeded checks if a data set has the withIPFSIndexing metadata flag.
 // Returns true if indexing is needed, false otherwise.
 // This is a read-only check that can be done outside a transaction for existing datasets.
+//
+// network selects the on-chain PDPVerifier address. Pass the empty
+// string to fall back to the build-tag-selected default (backward-
+// compatible for upstream callers; curio-core passes its configured
+// runtime network here).
 func CheckIfIndexingNeeded(
 	ctx context.Context,
+	network contract.Network,
 	ethClient ethchain.EthClient,
 	dataSetId uint64,
 ) (bool, error) {
+	if network == "" {
+		network = contract.NetworkFromBuildType()
+	}
 	// Get the PDPVerifier contract instance
-	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddresses().PDPVerifier, ethClient)
+	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddressesFor(network).PDPVerifier, ethClient)
 	if err != nil {
 		log.Errorw("Failed to instantiate PDPVerifier contract", "error", err, "dataSetId", dataSetId)
 		return false, err

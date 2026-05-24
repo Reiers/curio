@@ -90,6 +90,34 @@ type PDPService struct {
 	pullHandler *PullHandler
 
 	ipp *ipni_provider.Provider
+
+	// network controls which Filecoin network the on-chain contract
+	// addresses (PDPVerifier, FWSService, USDFC, ServiceProviderRegistry)
+	// resolve to. Defaults to contract.NetworkFromBuildType() so legacy
+	// upstream consumers built with -tags mainnet/calibnet behave
+	// unchanged. Runtime consumers (curio-core) override via
+	// SetNetwork before the first request lands.
+	network contract.Network
+}
+
+// SetNetwork overrides the on-chain network the PDPService resolves
+// contract addresses against. Must be called before the service starts
+// receiving requests; safe at construction time.
+//
+// curio-core uses this to switch between mainnet and calibration at
+// runtime instead of at build time. Upstream consumers that compile
+// with the per-network build tag don't need to call this.
+func (p *PDPService) SetNetwork(n contract.Network) {
+	p.network = n
+}
+
+// Network returns the currently-configured network. Falls back to
+// the build-tag-selected default when SetNetwork hasn't been called.
+func (p *PDPService) Network() contract.Network {
+	if p.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return p.network
 }
 
 type PDPServiceNodeApi interface {
@@ -1090,7 +1118,7 @@ func (p *PDPService) handleDeleteDataSetPiece(w http.ResponseWriter, r *http.Req
 	// Prepare the transaction
 	ethTx := types.NewTransaction(
 		0, // nonce will be set by SenderETH
-		contract.ContractAddresses().PDPVerifier,
+		contract.ContractAddressesFor(p.Network()).PDPVerifier,
 		big.NewInt(0), // value
 		0,             // gas limit (will be estimated)
 		nil,           // gas price (will be set by SenderETH)

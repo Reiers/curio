@@ -35,18 +35,28 @@ type InitProvingPeriodTask struct {
 	fil NextProvingPeriodTaskChainApi
 
 	addFunc promise.Promise[harmonytask.AddTaskFunc]
+
+	network contract.Network
+}
+
+func (ipp *InitProvingPeriodTask) resolvedNetwork() contract.Network {
+	if ipp.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return ipp.network
 }
 
 type InitProvingPeriodTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)
 }
 
-func NewInitProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH) *InitProvingPeriodTask {
+func NewInitProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH, network contract.Network) *InitProvingPeriodTask {
 	ipp := &InitProvingPeriodTask{
 		db:        db,
 		ethClient: ethClient,
 		sender:    sender,
 		fil:       fil,
+		network:   network,
 	}
 
 	_ = chainSched.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
@@ -123,7 +133,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 	}()
 
 	// Get the listener address for this data set from the PDPVerifier contract
-	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddresses().PDPVerifier, ipp.ethClient)
+	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddressesFor(ipp.resolvedNetwork()).PDPVerifier, ipp.ethClient)
 	if err != nil {
 		return false, xerrors.Errorf("failed to instantiate PDPVerifier contract: %w", err)
 	}
@@ -168,7 +178,7 @@ func (ipp *InitProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.Tas
 
 	init_prove_at := config.InitChallengeWindowStart.Add(config.InitChallengeWindowStart, config.ChallengeWindow.Div(config.ChallengeWindow, big.NewInt(2))) // Give a buffer of 1/2 challenge window epochs so that we are still within challenge window
 	// Instantiate the PDPVerifier contract
-	pdpContracts := contract.ContractAddresses()
+	pdpContracts := contract.ContractAddressesFor(ipp.resolvedNetwork())
 	pdpVeriferAddress := pdpContracts.PDPVerifier
 
 	// Prepare the transaction data

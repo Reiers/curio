@@ -21,7 +21,7 @@ type DataSetCreate struct {
 
 // processPendingDataSetCreates finalises data set creation best on transactions logs
 // it is called from proofset_watch.go
-func processPendingDataSetCreates(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
+func processPendingDataSetCreates(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	// Query for pdp_data_set_creates entries where ok = TRUE and data_set_created = FALSE
 	var dataSetCreates []DataSetCreate
 
@@ -46,7 +46,7 @@ func processPendingDataSetCreates(ctx context.Context, db harmonyquery.DBInterfa
 		log.Infow("Processing data set create",
 			"txHash", psc.CreateMessageHash,
 			"service", psc.Service)
-		err := processDataSetCreate(ctx, db, psc, ethClient)
+		err := processDataSetCreate(ctx, network, db, psc, ethClient)
 		if err != nil {
 			log.Warnf("Failed to process data set create for tx %s: %v", psc.CreateMessageHash, err)
 			continue
@@ -57,7 +57,7 @@ func processPendingDataSetCreates(ctx context.Context, db harmonyquery.DBInterfa
 	return nil
 }
 
-func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, psc DataSetCreate, ethClient ethchain.EthClient) error {
+func processDataSetCreate(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, psc DataSetCreate, ethClient ethchain.EthClient) error {
 	// Retrieve the tx_receipt from message_waits_eth
 	var txReceiptJSON []byte
 	log.Debugw("Fetching tx_receipt from message_waits_eth", "txHash", psc.CreateMessageHash)
@@ -87,7 +87,7 @@ func processDataSetCreate(ctx context.Context, db harmonyquery.DBInterface, psc 
 	log.Infow("Extracted dataSetId from receipt", "txHash", psc.CreateMessageHash, "dataSetId", dataSetId)
 
 	// Get the listener address for this data set from the PDPVerifier contract
-	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddresses().PDPVerifier, ethClient)
+	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddressesFor(network).PDPVerifier, ethClient)
 	if err != nil {
 		return xerrors.Errorf("failed to instantiate PDPVerifier contract: %w", err)
 	}

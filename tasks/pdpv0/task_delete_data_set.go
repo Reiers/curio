@@ -26,14 +26,23 @@ type DeleteDataSetTask struct {
 	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
+	network   contract.Network
 }
 
-func NewDeleteDataSetTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH) *DeleteDataSetTask {
+func NewDeleteDataSetTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH, network contract.Network) *DeleteDataSetTask {
 	return &DeleteDataSetTask{
 		db:        db,
 		ethClient: ethClient,
 		sender:    sender,
+		network:   network,
 	}
+}
+
+func (t *DeleteDataSetTask) resolvedNetwork() contract.Network {
+	if t.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return t.network
 }
 
 func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
@@ -51,7 +60,7 @@ func (t *DeleteDataSetTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 		return false, xerrors.Errorf("failed to get pdp owner: %w", err)
 	}
 
-	pdpAddress := contract.ContractAddresses().PDPVerifier
+	pdpAddress := contract.ContractAddressesFor(t.resolvedNetwork()).PDPVerifier
 
 	verifier, err := contract.NewPDPVerifier(pdpAddress, t.ethClient)
 	if err != nil {

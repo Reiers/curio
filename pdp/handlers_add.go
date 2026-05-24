@@ -375,7 +375,7 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 	// Prepare the transaction (nonce will be set to 0, SenderETH will assign it)
 	txEth := types.NewTransaction(
 		0,
-		contract.ContractAddresses().PDPVerifier,
+		contract.ContractAddressesFor(p.Network()).PDPVerifier,
 		big.NewInt(0),
 		0,
 		nil,
@@ -383,7 +383,7 @@ func (p *PDPService) handleAddPieceToDataSet(w http.ResponseWriter, r *http.Requ
 	)
 
 	// Step 8: Check for indexing requirements
-	mustIndex, err := CheckIfIndexingNeeded(ctx, p.ethClient, dataSetIdUint64)
+	mustIndex, err := CheckIfIndexingNeeded(ctx, p.Network(), p.ethClient, dataSetIdUint64)
 	if err != nil {
 		log.Errorw("Failed to check indexing requirements", "error", err, "dataSetId", dataSetId)
 		httpServerError(w, http.StatusInternalServerError, "Internal server error", err)

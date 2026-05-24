@@ -29,7 +29,12 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx *indexstore.IndexStore) {
+// NewPieceDeleteWatcher registers a tipset handler for piece-deletion
+// reconciliation. Currently a no-op while the cleanup logic is debugged
+// (see body comment). network is reserved for the on-chain PDPVerifier
+// address lookup when the cleanup logic is re-enabled.
+func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx *indexstore.IndexStore, network contract.Network) {
+	_ = network // reserved for re-enabled cleanup path; see _processPendingCleanup
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		// Zen: processPendingCleanup is currently disabled because we want to debug an observation
 		// that removed pieces cause unexpected proving failures. Rather than just comment out the

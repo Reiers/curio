@@ -58,6 +58,15 @@ type ProveTask struct {
 	head atomic.Pointer[chainTypes.TipSet]
 
 	addFunc promise.Promise[harmonytask.AddTaskFunc]
+
+	network contract.Network
+}
+
+func (p *ProveTask) resolvedNetwork() contract.Network {
+	if p.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return p.network
 }
 
 type ProveTaskChainApi interface {
@@ -65,7 +74,7 @@ type ProveTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)                                                                              //perm:read
 }
 
-func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil ProveTaskChainApi, sender *message.SenderETH, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *ProveTask {
+func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil ProveTaskChainApi, sender *message.SenderETH, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore, network contract.Network) *ProveTask {
 	pt := &ProveTask{
 		db:        db,
 		ethClient: ethClient,
@@ -73,6 +82,7 @@ func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInte
 		cpr:       cpr,
 		fil:       fil,
 		idx:       idx,
+		network:   network,
 	}
 
 	// ProveTasks are created on pdp_data_sets entries where
@@ -259,7 +269,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 		}
 	}
 
-	pdpContracts := contract.ContractAddresses()
+	pdpContracts := contract.ContractAddressesFor(p.resolvedNetwork())
 	pdpVerifierAddress := pdpContracts.PDPVerifier
 
 	pdpVerifier, err := contract.NewPDPVerifier(pdpVerifierAddress, p.ethClient)

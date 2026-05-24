@@ -17,9 +17,16 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-func NewDataSetDeleteWatcher(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched) {
+// NewDataSetDeleteWatcher registers a tipset handler that reconciles
+// pdp_delete_data_set rows against the on-chain PDPVerifier state.
+// network selects the on-chain contract addresses; pass the empty
+// string to fall back to contract.NetworkFromBuildType().
+func NewDataSetDeleteWatcher(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, network contract.Network) {
+	if network == "" {
+		network = contract.NetworkFromBuildType()
+	}
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
-		err := processPendingDeletes(ctx, db, ethClient)
+		err := processPendingDeletes(ctx, network, db, ethClient)
 		if err != nil {
 			log.Warnf("Failed to process pending data set delete: %s", err)
 		}
@@ -29,7 +36,7 @@ func NewDataSetDeleteWatcher(db harmonyquery.DBInterface, ethClient ethchain.Eth
 	}
 }
 
-func processPendingDeletes(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
+func processPendingDeletes(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 	var deletes []struct {
 		ID      int64        `db:"id"`
 		TxHash  string       `db:"delete_tx_hash"`
@@ -54,7 +61,7 @@ func processPendingDeletes(ctx context.Context, db harmonyquery.DBInterface, eth
 		return nil
 	}
 
-	pdpAddress := contract.ContractAddresses().PDPVerifier
+	pdpAddress := contract.ContractAddressesFor(network).PDPVerifier
 
 	verifier, err := contract.NewPDPVerifier(pdpAddress, ethClient)
 	if err != nil {

@@ -61,7 +61,7 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 	}
 
 	// Check if the recordkeeper is in the whitelist for public services
-	if contract.IsPublicService(serviceLabel) && !contract.IsRecordKeeperAllowed(recordKeeperAddr) {
+	if contract.IsPublicService(serviceLabel) && !contract.IsRecordKeeperAllowedFor(p.Network(), recordKeeperAddr) {
 		httpServerError(w, http.StatusForbidden, "recordKeeper address not allowed for public service", err)
 		return
 	}
@@ -114,7 +114,7 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 
 	tx := types.NewTransaction(
 		0,
-		contract.ContractAddresses().PDPVerifier,
+		contract.ContractAddressesFor(p.Network()).PDPVerifier,
 		big.NewInt(0),
 		0,
 		nil,
@@ -238,7 +238,7 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Check if the recordkeeper is in the whitelist for public services
-	if contract.IsPublicService(serviceLabel) && !contract.IsRecordKeeperAllowed(recordKeeperAddr) {
+	if contract.IsPublicService(serviceLabel) && !contract.IsRecordKeeperAllowedFor(p.Network(), recordKeeperAddr) {
 		httpServerError(w, http.StatusForbidden, "recordKeeper address not allowed for public service", err)
 		return
 	}
@@ -280,7 +280,7 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 	// Prepare the transaction (nonce will be set to 0, SenderETH will assign it)
 	tx := types.NewTransaction(
 		0,
-		contract.ContractAddresses().PDPVerifier,
+		contract.ContractAddressesFor(p.Network()).PDPVerifier,
 		big.NewInt(0),
 		0,
 		nil,

@@ -34,9 +34,12 @@ type PieceAddEntry struct {
 	AddMessageOK    *bool         `db:"add_message_ok"`
 }
 
-// processPendingDataSetPieceAdds processes piece additions that have been confirmed on-chain
+// processPendingDataSetPieceAdds processes piece additions that have been confirmed on-chain.
+// network is accepted for signature symmetry with the other processPending* functions
+// and is currently unused (the body doesn't reference contract addresses directly).
 // it is called from proofset_watch.go
-func processPendingDataSetPieceAdds(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
+func processPendingDataSetPieceAdds(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
+	_ = network // reserved for future on-chain lookups; consistent with sibling watcher signatures
 	// Query for pdp_data_set_piece_adds entries where add_message_ok = TRUE
 	var pieceAdds []DataSetPieceAdd
 

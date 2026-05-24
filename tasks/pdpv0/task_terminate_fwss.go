@@ -26,14 +26,23 @@ type TerminateFWSSTask struct {
 	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
+	network   contract.Network
 }
 
-func NewTerminateServiceTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH) *TerminateFWSSTask {
+func NewTerminateServiceTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH, network contract.Network) *TerminateFWSSTask {
 	return &TerminateFWSSTask{
 		db:        db,
 		ethClient: ethClient,
 		sender:    sender,
+		network:   network,
 	}
+}
+
+func (t *TerminateFWSSTask) resolvedNetwork() contract.Network {
+	if t.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return t.network
 }
 
 func (t *TerminateFWSSTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
@@ -46,7 +55,7 @@ func (t *TerminateFWSSTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 		return false, xerrors.Errorf("failed to select data set: %w", err)
 	}
 
-	sAddr := contract.ContractAddresses().AllowedPublicRecordKeepers.FWSService
+	sAddr := contract.ContractAddressesFor(t.resolvedNetwork()).AllowedPublicRecordKeepers.FWSService
 	viewAddr, err := contract.ResolveViewAddress(ctx, sAddr, t.ethClient)
 	if err != nil {
 		return false, xerrors.Errorf("failed to get FWSS view address: %w", err)
@@ -81,7 +90,7 @@ func (t *TerminateFWSSTask) Do(ctx context.Context, taskID harmonytask.TaskID, s
 		return false, xerrors.Errorf("failed to get pdp owner: %w", err)
 	}
 
-	address := contract.ContractAddresses().AllowedPublicRecordKeepers.FWSService
+	address := contract.ContractAddressesFor(t.resolvedNetwork()).AllowedPublicRecordKeepers.FWSService
 
 	fwssABi, err := FWSS.FilecoinWarmStorageServiceMetaData.GetAbi()
 	if err != nil {

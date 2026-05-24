@@ -168,7 +168,7 @@ func (v *EthCallValidator) ValidateAddPieces(ctx context.Context, params *AddPie
 	value := big.NewInt(0)
 	msg := ethereum.CallMsg{
 		From:  v.senderAddr,
-		To:    new(contract.ContractAddresses().PDPVerifier),
+		To:    new(contract.ContractAddressesFor(p.Network()).PDPVerifier),
 		Data:  data,
 		Value: value,
 	}
@@ -338,7 +338,7 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Check recordKeeper is allowed (prevents bypass via malicious contract)
-		if contract.IsPublicService(service) && !contract.IsRecordKeeperAllowed(recordKeeperAddr) {
+		if contract.IsPublicService(service) && !contract.IsRecordKeeperAllowedFor(p.Network(), recordKeeperAddr) {
 			httpServerError(w, http.StatusForbidden, "recordKeeper address not allowed for public service", err)
 			return
 		}

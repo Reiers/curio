@@ -37,18 +37,28 @@ type NextProvingPeriodTask struct {
 	fil NextProvingPeriodTaskChainApi
 
 	addFunc promise.Promise[harmonytask.AddTaskFunc]
+
+	network contract.Network
+}
+
+func (n *NextProvingPeriodTask) resolvedNetwork() contract.Network {
+	if n.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return n.network
 }
 
 type NextProvingPeriodTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)
 }
 
-func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH) *NextProvingPeriodTask {
+func NewNextProvingPeriodTask(db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil NextProvingPeriodTaskChainApi, chainSched *chainsched.CurioChainSched, sender *message.SenderETH, network contract.Network) *NextProvingPeriodTask {
 	n := &NextProvingPeriodTask{
 		db:        db,
 		ethClient: ethClient,
 		sender:    sender,
 		fil:       fil,
+		network:   network,
 	}
 
 	_ = chainSched.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
@@ -146,7 +156,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	}()
 
 	// Get the listener address for this data set from the PDPVerifier contract
-	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddresses().PDPVerifier, n.ethClient)
+	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddressesFor(n.resolvedNetwork()).PDPVerifier, n.ethClient)
 	if err != nil {
 		return false, xerrors.Errorf("failed to instantiate PDPVerifier contract: %w", err)
 	}
@@ -182,7 +192,7 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	}
 
 	// Instantiate the PDPVerifier contract
-	pdpContracts := contract.ContractAddresses()
+	pdpContracts := contract.ContractAddressesFor(n.resolvedNetwork())
 	pdpVerifierAddress := pdpContracts.PDPVerifier
 
 	// Prepare the transaction data
@@ -313,7 +323,7 @@ func (n *NextProvingPeriodTask) processPendingPieceDeletes(ctx context.Context, 
 		return nil
 	}
 
-	pdpAddress := contract.ContractAddresses().PDPVerifier
+	pdpAddress := contract.ContractAddressesFor(n.resolvedNetwork()).PDPVerifier
 
 	verifier, err := contract.NewPDPVerifier(pdpAddress, n.ethClient)
 	if err != nil {

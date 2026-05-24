@@ -25,14 +25,31 @@ type TaskChainSync struct {
 	db        harmonyquery.DBInterface
 	ethClient ethchain.EthClient
 	sender    *message.SenderETH
+	network   contract.Network
 }
 
-func NewTaskChainSync(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH) *TaskChainSync {
+// NewTaskChainSync constructs the singleton ChainSync task. network
+// selects which on-chain contract addresses (PDPVerifier, FWSS) the
+// task's Do() body resolves. Pass the empty string to fall back to
+// contract.NetworkFromBuildType().
+func NewTaskChainSync(db harmonyquery.DBInterface, ethClient ethchain.EthClient, sender *message.SenderETH, network contract.Network) *TaskChainSync {
 	return &TaskChainSync{
 		db:        db,
 		ethClient: ethClient,
 		sender:    sender,
+		network:   network,
 	}
+}
+
+// resolvedNetwork returns the task's configured network, falling back
+// to the build-tag-selected default if none was provided. Used at
+// every contract.ContractAddressesFor / ContractAddresses call site
+// within this task.
+func (t *TaskChainSync) resolvedNetwork() contract.Network {
+	if t.network == "" {
+		return contract.NetworkFromBuildType()
+	}
+	return t.network
 }
 
 func (t *TaskChainSync) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
@@ -159,7 +176,7 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 		return nil
 	}
 
-	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddresses().PDPVerifier, t.ethClient)
+	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddressesFor(t.resolvedNetwork()).PDPVerifier, t.ethClient)
 	if err != nil {
 		return xerrors.Errorf("failed to instantiate PDPVerifier contract: %w", err)
 	}
@@ -243,7 +260,7 @@ func (t *TaskChainSync) syncFinalizedDataSetDeletionRails(ctx context.Context) e
 		return nil
 	}
 
-	sAddr := contract.ContractAddresses().AllowedPublicRecordKeepers.FWSService
+	sAddr := contract.ContractAddressesFor(t.resolvedNetwork()).AllowedPublicRecordKeepers.FWSService
 	viewAddr, err := contract.ResolveViewAddress(ctx, sAddr, t.ethClient)
 	if err != nil {
 		return xerrors.Errorf("failed to get FWSS view address: %w", err)
@@ -254,7 +271,7 @@ func (t *TaskChainSync) syncFinalizedDataSetDeletionRails(ctx context.Context) e
 		return xerrors.Errorf("failed to instantiate FWSS service state view: %w", err)
 	}
 
-	paymentAddr, err := payment.PaymentContractAddress()
+	paymentAddr, err := payment.PaymentContractAddressFor(t.resolvedNetwork())
 	if err != nil {
 		return xerrors.Errorf("failed to get payment contract address: %w", err)
 	}

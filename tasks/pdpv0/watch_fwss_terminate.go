@@ -16,9 +16,16 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-func NewTerminateServiceWatcher(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched) {
+// NewTerminateServiceWatcher registers a tipset handler that reconciles
+// pdp_delete_data_set termination tx state against on-chain receipts.
+// network selects the on-chain FWSS contract address; pass the empty
+// string to fall back to contract.NetworkFromBuildType().
+func NewTerminateServiceWatcher(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, network contract.Network) {
+	if network == "" {
+		network = contract.NetworkFromBuildType()
+	}
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
-		err := processPendingTerminations(ctx, db, ethClient)
+		err := processPendingTerminations(ctx, network, db, ethClient)
 		if err != nil {
 			log.Warnf("Failed to process pending service termination transactions: %s", err)
 		}
@@ -28,7 +35,7 @@ func NewTerminateServiceWatcher(db harmonyquery.DBInterface, ethClient ethchain.
 	}
 }
 
-func processPendingTerminations(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
+func processPendingTerminations(ctx context.Context, network contract.Network, db harmonyquery.DBInterface, ethClient ethchain.EthClient) error {
 
 	var details []struct {
 		DataSetId int64        `db:"id"`
@@ -52,7 +59,7 @@ func processPendingTerminations(ctx context.Context, db harmonyquery.DBInterface
 		return nil
 	}
 
-	sAddr := contract.ContractAddresses().AllowedPublicRecordKeepers.FWSService
+	sAddr := contract.ContractAddressesFor(network).AllowedPublicRecordKeepers.FWSService
 	viewAddr, err := contract.ResolveViewAddress(ctx, sAddr, ethClient)
 	if err != nil {
 		return xerrors.Errorf("failed to get FWSS view address: %w", err)
