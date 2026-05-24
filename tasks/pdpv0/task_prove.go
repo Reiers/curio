@@ -11,6 +11,7 @@ import (
 	"math/bits"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -986,6 +987,15 @@ func (p *ProveTask) TypeDetails() harmonytask.TaskTypeDetails {
 			Ram: proveTaskRAM,
 		},
 		MaxFailures: 5,
+		// Linear backoff between retries. Without RetryWait the engine
+		// fires the next attempt immediately after a failure, which on a
+		// flaky RPC or rate-limited SP wallet burns through MaxFailures
+		// in seconds and silently strands the dataset (lifecycle bug from
+		// curio#879 / curio-core#57). 30s linear (30 / 60 / 90 / 120) is
+		// conservative: it gives a transient network blip room to clear
+		// while bounding total time to ~5 min across the 5-failure budget,
+		// well within the ~30 min calibration proving window.
+		RetryWait: func(retries int) time.Duration { return time.Duration(retries) * 30 * time.Second },
 	}
 }
 
