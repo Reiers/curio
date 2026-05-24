@@ -162,9 +162,12 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		// Insert into pdp_piecerefs
 		// Set needs_save_cache=TRUE for large pieces to enable proactive caching
 		needsSaveCache := padreader.PaddedSize(upload.PieceRawSize).Padded() >= abi.PaddedPieceSize(MinSizeForCache)
+		// CURRENT_TIMESTAMP instead of NOW() for SQLite portability
+		// (curio-core backend doesn't have a NOW() function). Both return
+		// the current UTC timestamp on either backend.
 		_, err = tx.ExecI(`
         INSERT INTO pdp_piecerefs (service, piece_cid, piece_ref, created_at, needs_save_cache)
-        VALUES ($1, $2, $3, NOW(), $4)`,
+        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4)`,
 			upload.Service, upload.PieceCID, upload.PieceRef, needsSaveCache)
 		if err != nil {
 			return false, fmt.Errorf("failed to insert into pdp_piecerefs: %w", err)
