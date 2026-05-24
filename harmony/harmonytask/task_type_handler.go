@@ -161,21 +161,35 @@ func (h *taskTypeHandler) considerWork(from string, tasks []task, eventEmitter e
 
 	if from != workSourceRecover {
 		var tasksAccepted []TaskID
-		err := h.TaskEngine.cfg.db.SelectI(h.TaskEngine.cfg.ctx, &tasksAccepted, `
-		WITH candidates AS (
-			SELECT t.id
-			FROM harmony_task t
-			JOIN unnest($2::bigint[]) AS x(id) ON x.id = t.id
-			WHERE t.owner_id IS NULL
-			ORDER BY array_position($2, t.id::bigint)
-			LIMIT $3
-			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE harmony_task t
-		SET owner_id = $1
-		FROM candidates c
-		WHERE t.id = c.id
-		RETURNING t.id;`, h.TaskEngine.cfg.ownerID, tIDs, maxAcceptable)
+		// Was: pg-only CTE with unnest($2::bigint[]) + array_position + FOR
+		// UPDATE SKIP LOCKED + UPDATE ... FROM. modernc.org/sqlite rejects
+		// every one of those constructs. Translated to a portable two-stage
+		// shape:
+		//
+		//   1. Truncate tIDs in Go to at most maxAcceptable. tIDs is already
+		//      in posted order from the caller's reorderTaskIDsByPostedOrder,
+		//      so the first maxAcceptable entries ARE the posted-oldest set
+		//      we'd have ordered to in the original query.
+		//   2. Atomic UPDATE...WHERE owner_id IS NULL AND id IN(?,?,?)
+		//      RETURNING id. The owner_id IS NULL filter is the partitioning
+		//      gate that previously came from FOR UPDATE SKIP LOCKED.
+		//      Multi-worker Postgres: two concurrent claimers wait on the
+		//      row-level write lock instead of skipping ahead. That's a
+		//      minor throughput regression under contention, NOT a
+		//      correctness regression: the set of returned ids is still
+		//      disjoint across concurrent UPDATEs because owner_id IS NULL
+		//      atomically excludes already-claimed rows.
+		//
+		// Tracked at Reiers/curio-core#54.
+		candidates := tIDs
+		if len(candidates) > maxAcceptable {
+			candidates = candidates[:maxAcceptable]
+		}
+		inClause, inArgs := inClauseTaskIDs(candidates)
+		claimArgs := append([]any{int64(h.TaskEngine.cfg.ownerID)}, inArgs...)
+		err := h.TaskEngine.cfg.db.SelectI(h.TaskEngine.cfg.ctx, &tasksAccepted,
+			expandIn(`UPDATE harmony_task SET owner_id = ? WHERE owner_id IS NULL AND id IN (?IN?) RETURNING id`, inClause),
+			claimArgs...)
 
 		if err != nil {
 			log.Error(err)
