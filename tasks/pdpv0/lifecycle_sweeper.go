@@ -91,6 +91,10 @@ func sweepOrphanedProvableDataSets(ctx context.Context, db harmonyquery.DBInterf
 		ProveAtEpoch int64 `db:"prove_at_epoch"`
 	}
 	var orphans []orphan
+	// pdp_prove_tasks uses the legacy column name `proofset` (not
+	// `data_set_id`) from the v1 schema; this name is preserved across
+	// the v0 rename because the column references the on-chain id, not
+	// the renamed pdp_data_sets.id. Verified live on calibration.
 	err := db.SelectI(ctx, &orphans, `
 		SELECT p.id, p.prove_at_epoch
 		FROM pdp_data_sets p
@@ -99,7 +103,7 @@ func sweepOrphanedProvableDataSets(ctx context.Context, db harmonyquery.DBInterf
 		  AND p.init_ready = 1
 		  AND p.unrecoverable_proving_failure_epoch IS NULL
 		  AND NOT EXISTS (
-		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.data_set_id = p.id
+		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.proofset = p.id
 		  )
 	`)
 	if err != nil {
@@ -128,7 +132,7 @@ func sweepOrphanedProvableDataSets(ctx context.Context, db harmonyquery.DBInterf
 		  AND init_ready = 1
 		  AND unrecoverable_proving_failure_epoch IS NULL
 		  AND NOT EXISTS (
-		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.data_set_id = pdp_data_sets.id
+		      SELECT 1 FROM pdp_prove_tasks pt WHERE pt.proofset = pdp_data_sets.id
 		  )
 	`)
 	return err
