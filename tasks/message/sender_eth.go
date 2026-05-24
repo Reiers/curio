@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -173,8 +174,68 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 		}
 	}
 
+	// Pre-flight: if this is a retry of a previously-signed task (the
+	// row already has signed_tx + nonce, indicating the broadcast +
+	// DB-update cycle was interrupted), check whether the signed tx
+	// already landed on-chain or in the mempool before re-broadcasting.
+	//
+	// Without this check, a DB UPDATE failure after a successful
+	// SendTransaction returns (false, err) from Do(), harmonytask
+	// retries, the retry hits the else-branch on line ~165 (nonce
+	// already set, signed_tx populated), deserializes the same signed
+	// tx, and re-broadcasts. The second broadcast fails with 'nonce
+	// too low' (the first one already landed), and the UPDATE then
+	// writes send_success=FALSE for a tx that actually succeeded.
+	// Calling code sees the false negative and surfaces a misleading
+	// HTTP 500 / 'send failed' to the client.
+	//
+	// curio-core#58 audit + #61 fix tracker. Skipped on the first
+	// attempt (nonce.Valid is FALSE on the freshly-signed path), so
+	// this is a pure-fast-path addition for the retry case only.
+	if dbTx.Nonce.Valid && len(dbTx.SignedTx) > 0 && !dbTx.SendSuccess.Valid {
+		_, isPending, lookupErr := s.client.TransactionByHash(ethCtx, signedTx.Hash())
+		if lookupErr == nil {
+			log.Infow("send_eth: tx already broadcast (DB-update-after-broadcast retry); skipping rebroadcast",
+				"task_id", taskID,
+				"signed_hash", signedTx.Hash().Hex(),
+				"is_pending", isPending)
+			_, dbErr := s.db.ExecI(ctx,
+				`UPDATE message_sends_eth
+                 SET send_success = TRUE, send_error = '', send_time = CURRENT_TIMESTAMP
+                 WHERE send_task_id = $1`, taskID)
+			if dbErr != nil {
+				return false, xerrors.Errorf("updating db record after pre-flight lookup: %w", dbErr)
+			}
+			return true, nil
+		}
+		// TransactionByHash returned not-found (or other transient lookup
+		// error). Safe to re-broadcast; SendTransaction is idempotent
+		// against the mempool. We rely on the benign-error classification
+		// below to handle the 'already known' / 'nonce too low' cases that
+		// can fire when the race window is very tight.
+	}
+
 	// Send the transaction
 	err = s.client.SendTransaction(ethCtx, signedTx)
+
+	// Classify benign broadcast errors as success. 'Already known' /
+	// 'nonce too low' / 'replacement transaction underpriced' all mean
+	// the tx is already in flight on-chain; the application should
+	// treat them the same as a fresh success. Belt-and-suspenders for
+	// the pre-flight check above (the lookup window is small but not
+	// zero, and SendTransaction may race against the mempool view).
+	if err != nil {
+		lowered := strings.ToLower(err.Error())
+		if strings.Contains(lowered, "already known") ||
+			strings.Contains(lowered, "nonce too low") ||
+			strings.Contains(lowered, "replacement transaction underpriced") {
+			log.Infow("send_eth: rebroadcast returned already-in-flight; treating as success",
+				"task_id", taskID,
+				"signed_hash", signedTx.Hash().Hex(),
+				"orig_err", err.Error())
+			err = nil
+		}
+	}
 
 	// Persist send result
 	var sendSuccess = err == nil
