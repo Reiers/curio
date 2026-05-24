@@ -33,7 +33,7 @@ import (
 // reconciliation. Currently a no-op while the cleanup logic is debugged
 // (see body comment). network is reserved for the on-chain PDPVerifier
 // address lookup when the cleanup logic is re-enabled.
-func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx *indexstore.IndexStore, network contract.Network) {
+func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx indexstore.Backend, network contract.Network) {
 	_ = network // reserved for re-enabled cleanup path; see _processPendingCleanup
 	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
 		// Zen: processPendingCleanup is currently disabled because we want to debug an observation
@@ -98,7 +98,7 @@ func _processPendingCleanup(ctx context.Context, db harmonyquery.DBInterface, et
 	return nil
 }
 
-func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterface, cfg *config.HTTPConfig, idx *indexstore.IndexStore) error {
+func processIndexingAndIPNICleanup(ctx context.Context, db harmonyquery.DBInterface, cfg *config.HTTPConfig, idx indexstore.Backend) error {
 
 	var pieces []struct {
 		ID        int64  `db:"id"`

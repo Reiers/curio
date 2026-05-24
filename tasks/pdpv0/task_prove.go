@@ -53,7 +53,7 @@ type ProveTask struct {
 	sender    *message.SenderETH
 	cpr       *cachedreader.CachedPieceReader
 	fil       ProveTaskChainApi
-	idx       *indexstore.IndexStore
+	idx       indexstore.Backend
 
 	head atomic.Pointer[chainTypes.TipSet]
 
@@ -74,7 +74,7 @@ type ProveTaskChainApi interface {
 	ChainHead(context.Context) (*chainTypes.TipSet, error)                                                                              //perm:read
 }
 
-func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil ProveTaskChainApi, sender *message.SenderETH, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore, network contract.Network) *ProveTask {
+func NewProveTask(chainSched *chainsched.CurioChainSched, db harmonyquery.DBInterface, ethClient ethchain.EthClient, fil ProveTaskChainApi, sender *message.SenderETH, cpr *cachedreader.CachedPieceReader, idx indexstore.Backend, network contract.Network) *ProveTask {
 	pt := &ProveTask{
 		db:        db,
 		ethClient: ethClient,
@@ -620,7 +620,7 @@ func (r *cprPieceReader) GetPieceReader(ctx context.Context, pieceCid cid.Cid) (
 
 // idxProofCache adapts IndexStore to the proof.ProofCache interface.
 type idxProofCache struct {
-	idx *indexstore.IndexStore
+	idx indexstore.Backend
 }
 
 func (c *idxProofCache) GetLayerIndex(ctx context.Context, pieceCidV2 cid.Cid) (bool, int, error) {

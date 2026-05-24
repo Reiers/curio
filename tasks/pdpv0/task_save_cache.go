@@ -36,10 +36,10 @@ const MaxRawSizeForSkip = MinSizeForCache * 127 / 128
 type TaskPDPSaveCache struct {
 	db  harmonyquery.DBInterface
 	cpr *cachedreader.CachedPieceReader
-	idx *indexstore.IndexStore
+	idx indexstore.Backend
 }
 
-func NewTaskPDPSaveCache(db harmonyquery.DBInterface, cpr *cachedreader.CachedPieceReader, idx *indexstore.IndexStore) *TaskPDPSaveCache {
+func NewTaskPDPSaveCache(db harmonyquery.DBInterface, cpr *cachedreader.CachedPieceReader, idx indexstore.Backend) *TaskPDPSaveCache {
 	return &TaskPDPSaveCache{
 		db:  db,
 		cpr: cpr,
