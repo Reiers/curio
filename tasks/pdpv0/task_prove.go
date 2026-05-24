@@ -687,7 +687,30 @@ func (p *ProveTask) provePiece(ctx context.Context, dataSetId int64, pieceId int
 		return subPiece.SubPieceOffset <= pieceChallengeOffset
 	})
 	if !ok {
-		return contract.IPDPTypesProof{}, xerrors.New("no subpiece found")
+		// Diagnostic: capture what we actually got from the DB.
+		// Tracks upstream filecoin-project/curio#1180 - root cause unknown,
+		// suspected to involve missing/late subpiece rows under disk I/O pressure
+		// or addPieces watcher races. Enrich the error so future incidents have
+		// concrete data instead of a bare "no subpiece found".
+		offsets := make([]int64, len(subPieces))
+		sizes := make([]int64, len(subPieces))
+		for i, sp := range subPieces {
+			offsets[i] = sp.SubPieceOffset
+			sizes[i] = sp.SubPieceSize
+		}
+		log.Errorw("no subpiece found for challenge",
+			"dataSetId", dataSetId,
+			"pieceId", pieceId,
+			"challengedLeaf", challengedLeaf,
+			"pieceChallengeOffset", pieceChallengeOffset,
+			"subPieceCount", len(subPieces),
+			"subPieceOffsets", offsets,
+			"subPieceSizes", sizes,
+		)
+		return contract.IPDPTypesProof{}, xerrors.Errorf(
+			"no subpiece found: dataset=%d piece=%d challengedLeaf=%d pieceChallengeOffset=%d subPieceCount=%d (see upstream filecoin-project/curio#1180)",
+			dataSetId, pieceId, challengedLeaf, pieceChallengeOffset, len(subPieces),
+		)
 	}
 	if challSubPiece.Removed {
 		log.Errorw("using removed piece", "dataSetId", dataSetId, "pieceId", pieceId)
