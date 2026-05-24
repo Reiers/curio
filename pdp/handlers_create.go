@@ -112,10 +112,19 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 		return
 	}
 
+	// msg.value = 0.1 FIL (FIL_CLEANUP_DEPOSIT in PDPVerifier v3.4.0).
+	// v3.2.0 deployments accepted USDFC sybil-fee routing and silently
+	// ignored msg.value; v3.4.0 REQUIRES msg.value >= FIL_CLEANUP_DEPOSIT
+	// for any path that creates a new dataset (createDataSet OR
+	// addPieces with NEW_DATA_SET_SENTINEL). Excess is refunded by the
+	// contract.
+	//
+	// SybilFee() returns 0.1 FIL by historical naming; the same value
+	// is now the cleanup deposit. See FilOzone/pdp CHANGELOG v3.4.0.
 	tx := types.NewTransaction(
 		0,
 		contract.ContractAddressesFor(p.Network()).PDPVerifier,
-		big.NewInt(0),
+		contract.SybilFee(),
 		0,
 		nil,
 		data,
@@ -277,11 +286,16 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Prepare the transaction (nonce will be set to 0, SenderETH will assign it)
+	// Prepare the transaction (nonce will be set to 0, SenderETH will assign it).
+	//
+	// msg.value = 0.1 FIL (FIL_CLEANUP_DEPOSIT in PDPVerifier v3.4.0).
+	// v3.2.0 deployments accepted USDFC sybil-fee routing and silently
+	// ignored msg.value; v3.4.0 REQUIRES msg.value >= FIL_CLEANUP_DEPOSIT.
+	// Excess is refunded by the contract. See FilOzone/pdp CHANGELOG v3.4.0.
 	tx := types.NewTransaction(
 		0,
 		contract.ContractAddressesFor(p.Network()).PDPVerifier,
-		big.NewInt(0),
+		contract.SybilFee(),
 		0,
 		nil,
 		data,
