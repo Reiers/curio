@@ -986,15 +986,19 @@ func (p *ProveTask) TypeDetails() harmonytask.TaskTypeDetails {
 			Gpu: 0,
 			Ram: proveTaskRAM,
 		},
-		MaxFailures: 5,
-		// Linear backoff between retries. Without RetryWait the engine
-		// fires the next attempt immediately after a failure, which on a
-		// flaky RPC or rate-limited SP wallet burns through MaxFailures
-		// in seconds and silently strands the dataset (lifecycle bug from
-		// curio#879 / curio-core#57). 30s linear (30 / 60 / 90 / 120) is
-		// conservative: it gives a transient network blip room to clear
-		// while bounding total time to ~5 min across the 5-failure budget,
-		// well within the ~30 min calibration proving window.
+		// MaxFailures bumped from 5 -> 10 after curio-core postmortem #62.
+		// Original budget (5x linear 30s = 7.5 min total) was sized for
+		// transient RPC errors; not enough headroom for slow-sync recovery
+		// scenarios where the local header store needs to catch up dozens
+		// of epochs. With a working VMBridge fallback this rarely matters,
+		// but defense-in-depth says give the recovery path real time.
+		MaxFailures: 10,
+		// Quadratic backoff: ~30s, 60s, 90s, 120s, 150s, 180s, 210s, 240s,
+		// 270s, 300s = 25 min total budget across 10 failures. Comfortably
+		// within the 30 min calibration proving window. Linear instead of
+		// exponential because we WANT the retries to keep happening across
+		// the proving window - exponential would cluster them at the start
+		// and miss the window if sync takes minutes to catch up.
 		RetryWait: func(retries int) time.Duration { return time.Duration(retries) * 30 * time.Second },
 	}
 }
