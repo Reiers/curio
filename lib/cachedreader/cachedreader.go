@@ -215,7 +215,7 @@ func (cpr *CachedPieceReader) getPieceReaderFromMarketPieceDeal(ctx context.Cont
 											  mpd.piece_length,
 											  mpd.raw_size,
 											  mpd.piece_ref,
-											  COALESCE(sm.reg_seal_proof, 0::bigint) AS reg_seal_proof
+											  COALESCE(sm.reg_seal_proof, CAST(0 AS BIGINT)) AS reg_seal_proof
 											FROM market_piece_deal mpd
 											LEFT JOIN sectors_meta sm
 											  ON sm.sp_id = mpd.sp_id
