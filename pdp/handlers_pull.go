@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
-	"strings"
 
 
 	"github.com/ethereum/go-ethereum"

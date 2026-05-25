@@ -1338,8 +1338,8 @@ func (p *PDPService) cleanup(ctx context.Context) {
 		// store refs created by PullPiece, so delete unused refs first;
 		// otherwise the CASCADE from pdp_piece_pulls removes the pointer to
 		// those refs.
-		_, err = db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-			_, err = tx.ExecI(`
+		_, txErr := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
+			_, err := tx.ExecI(`
 				WITH old_pull_refs AS (
 					SELECT DISTINCT fi.parked_piece_ref AS ref_id
 					FROM pdp_piece_pull_items fi
@@ -1372,8 +1372,8 @@ func (p *PDPService) cleanup(ctx context.Context) {
 
 			return true, nil
 		}, harmonyquery.OptionRetry())
-		if err != nil {
-			log.Errorw("failed to delete old piece pull records", "error", err)
+		if txErr != nil {
+			log.Errorw("failed to delete old piece pull records", "error", txErr)
 		}
 	}
 
