@@ -343,7 +343,7 @@ func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord
 	var existing bool
 
 	comm, err := s.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		err = tx.QueryRowI(`
+		err := tx.QueryRowI(`
 			INSERT INTO pdp_piece_pulls (service, extra_data_hash, data_set_id, record_keeper, client_address)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (service, extra_data_hash, data_set_id, record_keeper) DO NOTHING
@@ -368,7 +368,11 @@ func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord
 			return false, fmt.Errorf("insert pull: %w", err)
 		}
 
-		backpressure, err = s.enforceBackpressure(tx, pull, pieces)
+		var bpErr error
+		backpressure, bpErr = s.enforceBackpressure(tx, pull, pieces)
+		if bpErr != nil {
+			return false, bpErr
+		}
 		if err != nil {
 			return false, err
 		}
