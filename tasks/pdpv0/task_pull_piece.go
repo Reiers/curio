@@ -477,8 +477,7 @@ func (t *PDPPullPieceTask) assignGroup(tx harmonyquery.TxInterface, taskID harmo
 	return n > 0, nil
 }
 
-func (t *PDPPullPieceTask) Do(taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
-	ctx := context.Background()
+func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 
 	type pullSource struct {
 		PieceCid     string `db:"piece_cid"`

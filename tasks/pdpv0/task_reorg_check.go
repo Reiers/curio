@@ -98,8 +98,7 @@ type reorgCheckCandidate struct {
 	StoredBlockHash string        `db:"stored_block_hash"`
 }
 
-func (t *ReorgCheckTask) Do(taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
-	ctx := context.Background()
+func (t *ReorgCheckTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 
 	head, err := t.chain.ChainHead(ctx)
 	if err != nil {
