@@ -407,20 +407,27 @@ func (e *TaskEngine) pollerTryAllWork(schedulable bool) bool {
 			// stuck-task condition. Without this, a task with a Cost
 			// that exceeds the machine's resource budget sits in
 			// harmony_task indefinitely with no diagnostic at INFO
-			// level. Rate-limited per task type (default 5 min)
-			// so a sustained stuck condition doesn't spam logs.
-			var waitingCount int
-			if qerr := e.db.QueryRow(e.ctx,
-				`SELECT COUNT(*) FROM harmony_task WHERE owner_id IS NULL AND name=$1`,
-				v.Name).Scan(&waitingCount); qerr == nil &&
-				waitingCount > 0 &&
-				time.Since(v.lastInsufficientWarn) > insufficientWarnInterval {
-				log.Warnw("task waiting but machine cannot accept it",
-					"task_type", v.Name,
-					"reason", capErr.Error(),
-					"waiting_count", waitingCount,
-					"hint", "check engine resource budget vs task Cost (Cpu/Ram/Gpu) or task Max limit")
-				v.lastInsufficientWarn = time.Now()
+			// level.
+			//
+			// The rate-limit gate is checked BEFORE the COUNT query so
+			// that the DB load is bounded to at most one COUNT per task
+			// type per insufficientWarnInterval (5 min by default),
+			// regardless of how often this err branch fires. On a busy
+			// cluster with 10s-100s of nodes and 10k+ queued tasks, the
+			// err branch can fire on most poll cycles for most task
+			// types; we must not add a COUNT to that hot path.
+			if time.Since(v.lastInsufficientWarn) > insufficientWarnInterval {
+				var waitingCount int
+				if qerr := e.db.QueryRow(e.ctx,
+					`SELECT COUNT(*) FROM harmony_task WHERE owner_id IS NULL AND name=$1`,
+					v.Name).Scan(&waitingCount); qerr == nil && waitingCount > 0 {
+					log.Warnw("task waiting but machine cannot accept it",
+						"task_type", v.Name,
+						"reason", capErr.Error(),
+						"waiting_count", waitingCount,
+						"hint", "check engine resource budget vs task Cost (Cpu/Ram/Gpu) or task Max limit")
+					v.lastInsufficientWarn = time.Now()
+				}
 			}
 			continue
 		}

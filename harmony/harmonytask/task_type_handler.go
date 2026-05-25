@@ -45,10 +45,13 @@ const STORAGE_FAILURE_TIMEOUT = 3 * time.Minute
 
 // insufficientWarnInterval is the rate limit for the WARN that fires when
 // unowned tasks are waiting but the machine cannot accept them (resource
-// rejection). Without rate-limiting, every poll cycle (~3s) re-emits the
-// same WARN. 5 minutes is short enough to surface a real misconfiguration
-// promptly, long enough to keep logs readable on a sustained stuck-task
-// condition.
+// rejection). The gate is checked BEFORE the COUNT(*) on harmony_task in
+// harmonytask.go schedule(), so it bounds both the log emission AND the
+// DB query to at most once per task type per interval. This is important
+// on large clusters (10s-100s of nodes, 10k+ queued tasks) where the err
+// branch can fire on most poll cycles. 5 minutes is short enough to
+// surface a real misconfiguration promptly, long enough to keep logs
+// readable and DB load bounded on a sustained stuck-task condition.
 const insufficientWarnInterval = 5 * time.Minute
 
 func (h *taskTypeHandler) AddTask(extra func(TaskID, *harmonydb.Tx) (bool, error)) {
