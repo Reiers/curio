@@ -75,7 +75,11 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 
 			now := time.Now()
 
-			err = tx.QueryRowI(`SELECT task_id, last_run_time, run_now_request FROM harmony_task_singletons WHERE task_name = $1`, taskName).Scan(&existingTaskID, &lastRunTime, &runNowRequest)
+			// SQLite seam: $N -> ? and IS DISTINCT FROM -> IS NOT throughout this
+			// SingletonTaskAdder (curio-core#73.3). Without it the singletons
+			// (ParkComplete, ChainSync, PaySettle) never re-dispatch once the
+			// task-completion path is fixed, so the deal pipeline stays frozen.
+			err = tx.QueryRowI(`SELECT task_id, last_run_time, run_now_request FROM harmony_task_singletons WHERE task_name = ?`, taskName).Scan(&existingTaskID, &lastRunTime, &runNowRequest)
 			if isNoRows(err) {
 				shouldRun = true
 			} else if err != nil {
@@ -85,7 +89,7 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 
 				if existingTaskID != nil {
 					var htTaskID *int64
-					err = tx.QueryRowI(`SELECT id FROM harmony_task WHERE id = $1 AND name = $2`, existingTaskID, taskName).Scan(&htTaskID)
+					err = tx.QueryRowI(`SELECT id FROM harmony_task WHERE id = ? AND name = ?`, existingTaskID, taskName).Scan(&htTaskID)
 					if isNoRows(err) {
 						taskIsRunning = false
 					} else if err != nil {
@@ -107,9 +111,12 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 			}
 
 			// Conditionally insert or update the task entry, clearing run_now_request
+			// Positional ? args expanded in left-to-right order: the original
+			// reused $2 (taskID) three times and $3 (now) twice, so the arg list
+			// is (taskName, taskID, now, taskID, taskID, now).
 			n, err := tx.ExecI(`
                 INSERT INTO harmony_task_singletons (task_name, task_id, last_run_time, run_now_request)
-				VALUES ($1, $2, $3, FALSE)
+				VALUES (?, ?, ?, FALSE)
 				ON CONFLICT (task_name) DO UPDATE
 				SET task_id = 
 					CASE 
@@ -120,15 +127,15 @@ func SingletonTaskAdder(minInterval time.Duration, task TaskInterface) func(AddT
 							WHERE id = harmony_task_singletons.task_id 
 							  AND name = harmony_task_singletons.task_name
 						) 
-						THEN $2
+						THEN ?
 						ELSE harmony_task_singletons.task_id -- Otherwise, keep the existing task_id
 					END,
 					last_run_time = 
 					CASE 
-						WHEN harmony_task_singletons.task_id IS DISTINCT FROM $2 THEN $3 -- Only update when task_id changes
+						WHEN harmony_task_singletons.task_id IS NOT ? THEN ? -- Only update when task_id changes
 						ELSE harmony_task_singletons.last_run_time -- Keep the existing value
 					END,
-					run_now_request = FALSE`, taskName, taskID, now)
+					run_now_request = FALSE`, taskName, taskID, now, taskID, taskID, now)
 			if err != nil {
 				return false, err
 			}

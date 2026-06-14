@@ -310,6 +310,21 @@ func (p *PDPService) handleGetPieceStatus(w http.ResponseWriter, r *http.Request
 		Provider                 sql.NullString `db:"provider"`
 	}
 
+	// SQLite seam (curio-core#73.4): modernc.org/sqlite rejects LATERAL.
+	// The upstream `LEFT JOIN LATERAL (... MIN(ad_cid), MIN(provider),
+	// MIN(fetched_at) ... WHERE i.piece_cid = pr.piece_cid ...) ia ON true`
+	// is rewritten as three correlated scalar subqueries with identical
+	// semantics (each MIN over the same correlated row set), and $N -> ?.
+	// This endpoint is polled ~every 2.5s during deal verification, so the
+	// LATERAL syntax error 500'd every poll until this fix.
+	//
+	// Placeholder order (left-to-right): the three ia.* subqueries each
+	// reference the SP_ID, then `indexed` reuses the ad_cid subquery (SP_ID
+	// again), then the outer WHERE binds piece_cid + service. We expand the
+	// arg list accordingly.
+	const adCidSub = `(SELECT MIN(i.ad_cid) FROM ipni i WHERE i.piece_cid = pr.piece_cid AND i.provider = (SELECT peer_id FROM ipni_peerid WHERE sp_id = ?) AND i.is_rm = FALSE)`
+	const providerSub = `(SELECT MIN(i.provider) FROM ipni i WHERE i.piece_cid = pr.piece_cid AND i.provider = (SELECT peer_id FROM ipni_peerid WHERE sp_id = ?) AND i.is_rm = FALSE)`
+	const fetchedSub = `(SELECT MIN(af.fetched_at) FROM ipni i LEFT JOIN ipni_ad_fetches af ON af.ad_cid = i.ad_cid WHERE i.piece_cid = pr.piece_cid AND i.provider = (SELECT peer_id FROM ipni_peerid WHERE sp_id = ?) AND i.is_rm = FALSE)`
 	err = p.db.SelectI(ctx, &results, `
 		SELECT
 			pr.piece_cid,
@@ -317,46 +332,53 @@ func (p *PDPService) handleGetPieceStatus(w http.ResponseWriter, r *http.Request
 			pr.created_at,
 
 			-- Indexing status (true when CAR indexing completed and ready for/in IPNI)
-			(pr.needs_ipni OR pr.ipni_task_id IS NOT NULL OR ia.ad_cid IS NOT NULL) as indexed,
+			(pr.needs_ipni OR pr.ipni_task_id IS NOT NULL OR `+adCidSub+` IS NOT NULL) as indexed,
 			pr.indexed_at,
 
 			-- Advertisement status
-			ia.ad_cid IS NOT NULL as advertisement_created,
+			`+adCidSub+` IS NOT NULL as advertisement_created,
 			pr.advertisement_created_at as advertisement_created_at,
-			ia.ad_cid,
+			`+adCidSub+` as ad_cid,
 
 			-- Advertisement Fetch status
-			ia.fetched_at IS NOT NULL as advertisement_retrieved,
-			ia.fetched_at as advertisement_retrieved_at,
+			`+fetchedSub+` IS NOT NULL as advertisement_retrieved,
+			`+fetchedSub+` as advertisement_retrieved_at,
 
 			-- Determine overall status
 			CASE
-				WHEN ia.fetched_at IS NOT NULL THEN 'retrieved'
-				WHEN ia.ad_cid IS NOT NULL THEN 'announced'
+				WHEN `+fetchedSub+` IS NOT NULL THEN 'retrieved'
+				WHEN `+adCidSub+` IS NOT NULL THEN 'announced'
 				WHEN pr.ipni_task_id IS NOT NULL THEN 'creating_ad'
 				WHEN pr.indexing_task_id IS NOT NULL THEN 'indexing'
 				ELSE 'pending'
 			END as status,
-		
-			ia.provider
+
+			`+providerSub+` as provider
 
 		FROM pdp_piecerefs pr
 		JOIN parked_piece_refs pprf ON pprf.ref_id = pr.piece_ref
 		JOIN parked_pieces pp ON pp.id = pprf.piece_id
-		LEFT JOIN LATERAL (
-			SELECT
-				MIN(i.ad_cid) as ad_cid,
-				MIN(i.provider) as provider,
-				MIN(af.fetched_at) as fetched_at
-			FROM ipni i
-			LEFT JOIN ipni_ad_fetches af ON af.ad_cid = i.ad_cid
-			WHERE i.piece_cid = pr.piece_cid
-				AND i.provider = (SELECT peer_id FROM ipni_peerid WHERE sp_id = $3)
-				AND i.is_rm = FALSE
-		) ia ON true
-		WHERE pr.piece_cid = $1 AND pr.service = $2
+		WHERE pr.piece_cid = ? AND pr.service = ?
 		LIMIT 1
-	`, pieceCidV1Str, serviceLabel, indexing.PDP_v0_SP_ID)
+	`,
+		// indexed (ad_cid sub)
+		indexing.PDP_v0_SP_ID,
+		// advertisement_created (ad_cid sub)
+		indexing.PDP_v0_SP_ID,
+		// ad_cid
+		indexing.PDP_v0_SP_ID,
+		// advertisement_retrieved (fetched sub)
+		indexing.PDP_v0_SP_ID,
+		// advertisement_retrieved_at (fetched sub)
+		indexing.PDP_v0_SP_ID,
+		// status: fetched sub
+		indexing.PDP_v0_SP_ID,
+		// status: ad_cid sub
+		indexing.PDP_v0_SP_ID,
+		// provider sub
+		indexing.PDP_v0_SP_ID,
+		// WHERE piece_cid, service
+		pieceCidV1Str, serviceLabel)
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Failed to query piece status", err)
 		return
@@ -1338,34 +1360,37 @@ func (p *PDPService) cleanup(ctx context.Context) {
 		// store refs created by PullPiece, so delete unused refs first;
 		// otherwise the CASCADE from pdp_piece_pulls removes the pointer to
 		// those refs.
+		// SQLite-portable cleanup. Upstream uses Postgres CTE + USING
+		// + INTERVAL syntax; we rewrite as two scalar DELETEs with the
+		// same semantics using datetime() arithmetic. The 5-day cutoff
+		// is the same.
 		_, txErr := db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 			_, err := tx.ExecI(`
-				WITH old_pull_refs AS (
-					SELECT DISTINCT fi.parked_piece_ref AS ref_id
+				DELETE FROM parked_piece_refs
+				WHERE ref_id IN (
+					SELECT DISTINCT fi.parked_piece_ref
 					FROM pdp_piece_pull_items fi
 					JOIN pdp_piece_pulls pp ON pp.id = fi.fetch_id
-					WHERE pp.created_at < NOW() - INTERVAL '5 days'
+					WHERE pp.created_at < datetime('now', '-5 days')
 						AND fi.parked_piece_ref IS NOT NULL
 				)
-				DELETE FROM parked_piece_refs pr
-				USING old_pull_refs old
-				WHERE pr.ref_id = old.ref_id
-					AND NOT EXISTS (
-						SELECT 1 FROM pdp_piecerefs ppr WHERE ppr.piece_ref = pr.ref_id
-					)
-					AND NOT EXISTS (
-						SELECT 1
-						FROM pdp_piece_pull_items live_fi
-						JOIN pdp_piece_pulls live_pp ON live_pp.id = live_fi.fetch_id
-						WHERE live_fi.parked_piece_ref = pr.ref_id
-							AND live_pp.created_at >= NOW() - INTERVAL '5 days'
-					)
+				AND NOT EXISTS (
+					SELECT 1 FROM pdp_piecerefs ppr
+					WHERE ppr.piece_ref = parked_piece_refs.ref_id
+				)
+				AND NOT EXISTS (
+					SELECT 1
+					FROM pdp_piece_pull_items live_fi
+					JOIN pdp_piece_pulls live_pp ON live_pp.id = live_fi.fetch_id
+					WHERE live_fi.parked_piece_ref = parked_piece_refs.ref_id
+						AND live_pp.created_at >= datetime('now', '-5 days')
+				)
 				`)
 			if err != nil {
 				return false, fmt.Errorf("delete old pull refs: %w", err)
 			}
 
-			_, err = tx.ExecI(`DELETE FROM pdp_piece_pulls WHERE created_at < NOW() - INTERVAL '5 days'`)
+			_, err = tx.ExecI(`DELETE FROM pdp_piece_pulls WHERE created_at < datetime('now', '-5 days')`)
 			if err != nil {
 				return false, fmt.Errorf("delete old pull records: %w", err)
 			}

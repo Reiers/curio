@@ -499,25 +499,39 @@ func (s *dbPullStore) enforceBackpressure(tx harmonyquery.TxInterface, pull *Pul
 		return false, nil
 	}
 
+	// SQLite-portable rewrite: upstream uses Postgres unnest() over
+	// []string + []int64 array bindings. SQLite has no array types,
+	// so we build a parameterized VALUES list inline. The list is
+	// always small (handful of CIDs per pull session) so the SQL
+	// stays compact. Each piece contributes 2 params; the trailing
+	// param is the client_address.
+	valuesParts := make([]string, 0, len(pieceCids))
+	queryArgs := make([]interface{}, 0, len(pieceCids)*2+1)
+	for i := range pieceCids {
+		valuesParts = append(valuesParts, "(?, ?)")
+		queryArgs = append(queryArgs, pieceCids[i], rawSizes[i])
+	}
+	queryArgs = append(queryArgs, pull.ClientAddress)
+	incomingValues := strings.Join(valuesParts, ", ")
+
 	var globalPending, clientPending int
-	err := tx.QueryRowI(`
-		WITH incoming AS (
-			SELECT DISTINCT piece_cid, piece_raw_size
-			FROM unnest($1::TEXT[], $2::BIGINT[]) AS t(piece_cid, piece_raw_size)
+	sqlText := `
+		WITH incoming(piece_cid, piece_raw_size) AS (
+			VALUES ` + incomingValues + `
 		),
 		global_active AS (
 			SELECT DISTINCT fi.piece_cid, fi.piece_raw_size
 			FROM pdp_piece_pull_items fi
-			WHERE fi.complete = FALSE
-				AND fi.failed = FALSE
+			WHERE fi.complete = 0
+				AND fi.failed = 0
 		),
 		client_active AS (
 			SELECT DISTINCT fi.piece_cid, fi.piece_raw_size
 			FROM pdp_piece_pull_items fi
 			JOIN pdp_piece_pulls fp ON fp.id = fi.fetch_id
-			WHERE fi.complete = FALSE
-				AND fi.failed = FALSE
-				AND fp.client_address = $3
+			WHERE fi.complete = 0
+				AND fi.failed = 0
+				AND fp.client_address = ?
 		),
 		global_combined AS (
 			SELECT piece_cid, piece_raw_size FROM global_active
@@ -532,7 +546,8 @@ func (s *dbPullStore) enforceBackpressure(tx harmonyquery.TxInterface, pull *Pul
 		SELECT
 			(SELECT COUNT(*) FROM global_combined),
 			(SELECT COUNT(*) FROM client_combined)
-	`, pieceCids, rawSizes, pull.ClientAddress).Scan(&globalPending, &clientPending)
+	`
+	err := tx.QueryRowI(harmonyquery.RawString(sqlText), queryArgs...).Scan(&globalPending, &clientPending)
 	if err != nil {
 		return false, fmt.Errorf("count pull pending pieces: %w", err)
 	}

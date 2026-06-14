@@ -110,9 +110,16 @@ func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, 
 }
 
 func CleanupMachines(ctx context.Context, db harmonyquery.DBInterface) int {
+	// SQLite-portable: datetime modifiers take seconds, so we pass
+	// seconds (rounded down) instead of milliseconds. The original
+	// Postgres formulation `CURRENT_TIMESTAMP - INTERVAL '1 MS' * $1`
+	// is equivalent to `datetime('now', printf('-%d seconds', $1/1000))`
+	// once converted. We use SQLite's `||` string-concat to build the
+	// modifier inline; Postgres accepts the same shape via implicit
+	// cast, so the rewritten query runs against both backends.
 	ct, err := db.ExecI(ctx,
-		`DELETE FROM harmony_machines WHERE last_contact < CURRENT_TIMESTAMP - INTERVAL '1 MILLISECOND' * $1 `,
-		LOOKS_DEAD_TIMEOUT.Milliseconds()) // ms enables unit testing to change timeout.
+		`DELETE FROM harmony_machines WHERE last_contact < datetime('now', '-' || ? || ' seconds')`,
+		int64(LOOKS_DEAD_TIMEOUT.Seconds()))
 	if err != nil {
 		logger.Warn("unable to delete old machines: ", err)
 	}

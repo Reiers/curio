@@ -353,8 +353,10 @@ func (h *taskTypeHandler) considerWork(from string, tasks []task, eventEmitter e
 				}
 
 				var owner int
+				// SQLite seam: $N -> ? (curio-core#73.1). Ownership check runs for
+				// every executing task; Postgres placeholder would error here too.
 				err := h.TaskEngine.cfg.db.QueryRowI(taskCtx,
-					`SELECT owner_id FROM harmony_task WHERE id=$1`, tID).Scan(&owner)
+					`SELECT owner_id FROM harmony_task WHERE id=?`, tID).Scan(&owner)
 				if err != nil {
 					log.Error("Cannot determine ownership: ", err)
 					return false
@@ -412,7 +414,11 @@ retryRecordCompletion:
 		var postedTime time.Time
 		var retries uint
 		var updateTime time.Time
-		err := tx.QueryRowI(`SELECT posted_time, update_time, retries FROM harmony_task WHERE id=$1`, tID).Scan(&postedTime, &updateTime, &retries)
+		// SQLite seam: $N -> ? throughout recordCompletion (curio-core#73.1).
+		// modernc.org/sqlite rejects Postgres positional placeholders; the
+		// task-claim path was ported but the completion path was missed, so
+		// tasks never retired and harmony_task_history stayed empty.
+		err := tx.QueryRowI(`SELECT posted_time, update_time, retries FROM harmony_task WHERE id=?`, tID).Scan(&postedTime, &updateTime, &retries)
 		if err != nil {
 			return false, fmt.Errorf("could not log completion: %w ", err)
 		}
@@ -423,7 +429,7 @@ retryRecordCompletion:
 		result := ""
 		switch {
 		case done:
-			_, err = tx.ExecI("DELETE FROM harmony_task WHERE id=$1", tID)
+			_, err = tx.ExecI("DELETE FROM harmony_task WHERE id=?", tID)
 			if err != nil {
 				return false, fmt.Errorf("could not log completion: %w", err)
 			}
@@ -432,7 +438,7 @@ retryRecordCompletion:
 				result = "non-failing error: " + doErr.Error()
 			}
 		case preempted:
-			_, err = tx.ExecI(`UPDATE harmony_task SET owner_id=NULL, update_time=CURRENT_TIMESTAMP WHERE id=$1`, tID)
+			_, err = tx.ExecI(`UPDATE harmony_task SET owner_id=NULL, update_time=CURRENT_TIMESTAMP WHERE id=?`, tID)
 			if err != nil {
 				return false, fmt.Errorf("could not release preempted task: %v %v", tID, err)
 			}
@@ -447,12 +453,12 @@ retryRecordCompletion:
 				deleteTask = true
 			}
 			if deleteTask {
-				_, err = tx.ExecI("DELETE FROM harmony_task WHERE id=$1", tID)
+				_, err = tx.ExecI("DELETE FROM harmony_task WHERE id=?", tID)
 				if err != nil {
 					return false, fmt.Errorf("could not delete failed job: %w", err)
 				}
 			} else {
-				_, err = tx.ExecI(`UPDATE harmony_task SET owner_id=NULL, retries=$1, update_time=CURRENT_TIMESTAMP WHERE id=$2`, retries+1, tID)
+				_, err = tx.ExecI(`UPDATE harmony_task SET owner_id=NULL, retries=?, update_time=CURRENT_TIMESTAMP WHERE id=?`, retries+1, tID)
 				if err != nil {
 					return false, fmt.Errorf("could not disown failed task: %v %v", tID, err)
 				}
@@ -462,11 +468,13 @@ retryRecordCompletion:
 		var hid int
 		err = tx.QueryRowI(`INSERT INTO harmony_task_history 
 									 (task_id, name, posted, work_start, work_end, result, completed_by_host_and_port, err)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, tID, h.Name, postedTime.UTC(), workStart.UTC(), workEnd.UTC(), done, h.TaskEngine.cfg.hostAndPort, result).Scan(&hid)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, tID, h.Name, postedTime.UTC(), workStart.UTC(), workEnd.UTC(), done, h.TaskEngine.cfg.hostAndPort, result).Scan(&hid)
 		if err != nil {
 			return false, fmt.Errorf("could not write history: %w", err)
 		}
 		if sectorID != nil {
+			// PDP-only mode never sets sectorID, so this Postgres function call
+			// is unreachable here; left as-is (curio-core#73.1 note).
 			_, err = tx.ExecI(`SELECT append_sector_pipeline_events($1, $2, $3)`, uint64(sectorID.Miner), uint64(sectorID.Number), hid)
 			if err != nil {
 				return false, fmt.Errorf("could not append sector pipeline events: %w", err)
