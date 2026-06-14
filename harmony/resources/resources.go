@@ -97,7 +97,13 @@ func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, 
 			if reg.shutdown.Load() {
 				return
 			}
-			_, err := db.ExecI(ctx, `UPDATE harmony_machines SET last_contact=CURRENT_TIMESTAMP where id=$1`, reg.MachineID)
+			// SQLite-portable placeholder (curio-core#76). The Postgres
+			// $1 form does not bind under modernc.org/sqlite, so this
+			// keepalive silently no-op'd and CleanupMachines reaped the
+			// node. (curio-core's engine bypasses RegisterWithResources
+			// entirely and runs its own keepalive, but fix this too so
+			// any direct caller stays correct on both backends.)
+			_, err := db.ExecI(ctx, `UPDATE harmony_machines SET last_contact=CURRENT_TIMESTAMP where id=?`, reg.MachineID)
 			if err != nil {
 				logger.Error("Cannot keepalive ", err)
 			}
