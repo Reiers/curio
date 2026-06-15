@@ -340,8 +340,9 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 		ProveAtEpoch          sql.NullInt64 `db:"prove_at_epoch"`
 		ConsecutiveFailures   int           `db:"consecutive_prove_failures"`
 		NextProveAttemptEpoch sql.NullInt64 `db:"next_prove_attempt_at"`
+		PrevChallengeEpoch    sql.NullInt64 `db:"prev_challenge_request_epoch"`
 	}
-	if err := t.db.SelectI(ctx, &dataSets, `SELECT id, prove_at_epoch, consecutive_prove_failures, next_prove_attempt_at
+	if err := t.db.SelectI(ctx, &dataSets, `SELECT id, prove_at_epoch, consecutive_prove_failures, next_prove_attempt_at, prev_challenge_request_epoch
 		FROM pdp_data_sets
 		WHERE unrecoverable_proving_failure_epoch IS NULL
 		  AND (consecutive_prove_failures > 0 OR next_prove_attempt_at IS NOT NULL)
@@ -384,6 +385,18 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 		} else if dataSet.ConsecutiveFailures > 0 && dataSet.NextProveAttemptEpoch.Valid {
 			lastFailureEpoch := dataSet.NextProveAttemptEpoch.Int64 - int64(CalculateBackoffBlocks(dataSet.ConsecutiveFailures))
 			proofAfterLocalFailure = lastProvenEpoch.Cmp(big.NewInt(lastFailureEpoch)) > 0
+		} else if dataSet.ConsecutiveFailures > 0 && dataSet.PrevChallengeEpoch.Valid {
+			// Drift-state recovery (curio-core#65): the dataset is below the
+			// unrecoverable threshold yet has both prove_at_epoch and
+			// next_prove_attempt_at NULL, so neither branch above can anchor
+			// the comparison. This happens when an older failure path NULL'd
+			// prove_at_epoch while the on-chain proving loop kept advancing
+			// (the contract auto-continues), leaving consecutive_prove_failures
+			// stuck high on a dataset that is actually healthy. Anchor on the
+			// last challenge we requested: if the chain has proven at or after
+			// it, the local failure count is stale and must be cleared so the
+			// dataset stops looking dead in the dashboard / alerts.
+			proofAfterLocalFailure = lastProvenEpoch.Cmp(big.NewInt(dataSet.PrevChallengeEpoch.Int64)) >= 0
 		}
 		if !proofAfterLocalFailure {
 			continue
