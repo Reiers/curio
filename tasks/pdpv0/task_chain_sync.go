@@ -518,9 +518,10 @@ func (t *TaskChainSync) reArmDriftedProvingSchedule(ctx context.Context) error {
 		if err != nil {
 			return xerrors.Errorf("failed to get last proven epoch for data set %d: %w", dataSet.ID, err)
 		}
-		if lastProvenEpoch == nil || lastProvenEpoch.Sign() <= 0 {
-			// Never proven on-chain yet — this is a first-init case, leave it
-			// for InitPP rather than re-arming a window the chain doesn't have.
+		if !driftedDataSetIsProving(live, lastProvenEpoch) {
+			// Not live, or never proven on-chain yet — a first-init case;
+			// leave it for InitPP rather than re-arming a window the chain
+			// doesn't have.
 			continue
 		}
 
@@ -546,7 +547,7 @@ func (t *TaskChainSync) reArmDriftedProvingSchedule(ctx context.Context) error {
 			}
 			return xerrors.Errorf("failed to get next challenge window for data set %d: %w", dataSet.ID, err)
 		}
-		if nextProveAt == nil || nextProveAt.Sign() <= 0 {
+		if !nextProveEpochIsArmable(nextProveAt) {
 			continue
 		}
 
@@ -573,6 +574,23 @@ func (t *TaskChainSync) reArmDriftedProvingSchedule(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// driftedDataSetIsProving reports whether an on-chain observation (DataSetLive
+// + GetDataSetLastProvenEpoch) shows a dataset healthy enough to re-arm.
+// A non-live dataset, or one that has never produced a proof (lastProven<=0),
+// is a first-init case that belongs to InitPP, not the drift reconciler.
+func driftedDataSetIsProving(live bool, lastProvenEpoch *big.Int) bool {
+	if !live {
+		return false
+	}
+	return lastProvenEpoch != nil && lastProvenEpoch.Sign() > 0
+}
+
+// nextProveEpochIsarmable reports whether a NextPDPChallengeWindowStart result
+// is a usable re-arm target (non-nil, strictly positive).
+func nextProveEpochIsArmable(nextProveAt *big.Int) bool {
+	return nextProveAt != nil && nextProveAt.Sign() > 0
 }
 
 // syncFinalizedDataSetDeletionRails moves terminated PDP data sets to the local deletion-allowed state once the payment rail is final.
