@@ -379,26 +379,9 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 			continue
 		}
 
-		proofAfterLocalFailure := false
-		if dataSet.ProveAtEpoch.Valid && lastProvenEpoch.Cmp(big.NewInt(dataSet.ProveAtEpoch.Int64)) >= 0 {
-			proofAfterLocalFailure = true
-		} else if dataSet.ConsecutiveFailures > 0 && dataSet.NextProveAttemptEpoch.Valid {
-			lastFailureEpoch := dataSet.NextProveAttemptEpoch.Int64 - int64(CalculateBackoffBlocks(dataSet.ConsecutiveFailures))
-			proofAfterLocalFailure = lastProvenEpoch.Cmp(big.NewInt(lastFailureEpoch)) > 0
-		} else if dataSet.ConsecutiveFailures > 0 && dataSet.PrevChallengeEpoch.Valid {
-			// Drift-state recovery (curio-core#65): the dataset is below the
-			// unrecoverable threshold yet has both prove_at_epoch and
-			// next_prove_attempt_at NULL, so neither branch above can anchor
-			// the comparison. This happens when an older failure path NULL'd
-			// prove_at_epoch while the on-chain proving loop kept advancing
-			// (the contract auto-continues), leaving consecutive_prove_failures
-			// stuck high on a dataset that is actually healthy. Anchor on the
-			// last challenge we requested: if the chain has proven at or after
-			// it, the local failure count is stale and must be cleared so the
-			// dataset stops looking dead in the dashboard / alerts.
-			proofAfterLocalFailure = lastProvenEpoch.Cmp(big.NewInt(dataSet.PrevChallengeEpoch.Int64)) >= 0
-		}
-		if !proofAfterLocalFailure {
+		if !proofClearsLocalFailure(lastProvenEpoch,
+			dataSet.ProveAtEpoch, dataSet.NextProveAttemptEpoch, dataSet.PrevChallengeEpoch,
+			dataSet.ConsecutiveFailures) {
 			continue
 		}
 
@@ -422,6 +405,41 @@ func (t *TaskChainSync) syncProvenDataSetFailureState(ctx context.Context) error
 	}
 
 	return nil
+}
+
+// proofClearsLocalFailure decides whether an on-chain lastProvenEpoch proves
+// that a dataset's local proving-failure state is stale and should be cleared.
+//
+// Three anchors, in priority order:
+//  1. prove_at_epoch: the window we last armed locally. A proof at/after it
+//     means we proved the window we were worried about.
+//  2. next_prove_attempt_at: when prove_at_epoch is NULL but a backoff is
+//     pending, reconstruct the epoch of the last failure (next attempt minus
+//     the backoff for the current failure count) and require a proof strictly
+//     after it.
+//  3. prev_challenge_request_epoch (curio-core#65 drift recovery): when both
+//     of the above are NULL but consecutive_prove_failures > 0, the dataset
+//     drifted into a state no branch could anchor (an old failure path NULL'd
+//     prove_at_epoch while the on-chain loop kept advancing). Anchor on the
+//     last challenge we requested; a proof at/after it means the local count
+//     is stale on an otherwise-healthy dataset.
+//
+// Returns false when no anchor is available (caller leaves the row untouched).
+func proofClearsLocalFailure(lastProvenEpoch *big.Int, proveAtEpoch, nextProveAttemptEpoch, prevChallengeEpoch sql.NullInt64, consecutiveFailures int) bool {
+	if lastProvenEpoch == nil {
+		return false
+	}
+	switch {
+	case proveAtEpoch.Valid:
+		return lastProvenEpoch.Cmp(big.NewInt(proveAtEpoch.Int64)) >= 0
+	case consecutiveFailures > 0 && nextProveAttemptEpoch.Valid:
+		lastFailureEpoch := nextProveAttemptEpoch.Int64 - int64(CalculateBackoffBlocks(consecutiveFailures))
+		return lastProvenEpoch.Cmp(big.NewInt(lastFailureEpoch)) > 0
+	case consecutiveFailures > 0 && prevChallengeEpoch.Valid:
+		return lastProvenEpoch.Cmp(big.NewInt(prevChallengeEpoch.Int64)) >= 0
+	default:
+		return false
+	}
 }
 
 // syncFinalizedDataSetDeletionRails moves terminated PDP data sets to the local deletion-allowed state once the payment rail is final.
