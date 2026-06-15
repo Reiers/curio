@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"math/big"
+	"strings"
 	"time"
 
 	"golang.org/x/xerrors"
@@ -72,6 +73,13 @@ func (t *TaskChainSync) Do(ctx context.Context, taskID harmonytask.TaskID, still
 	}
 	if err := t.syncProvenDataSetFailureState(ctx); err != nil {
 		return false, xerrors.Errorf("syncing proven PDP data set failure state: %w", err)
+	}
+
+	if !stillOwned() {
+		return false, nil
+	}
+	if err := t.reArmDriftedProvingSchedule(ctx); err != nil {
+		return false, xerrors.Errorf("re-arming drifted PDP proving schedule: %w", err)
 	}
 
 	if !stillOwned() {
@@ -440,6 +448,131 @@ func proofClearsLocalFailure(lastProvenEpoch *big.Int, proveAtEpoch, nextProveAt
 	default:
 		return false
 	}
+}
+
+// reArmDriftedProvingSchedule recovers datasets that are proving healthily
+// on-chain but have locally drifted to prove_at_epoch=NULL (curio-core#79).
+//
+// Background: once a failure path NULLs prove_at_epoch (max-failures branch,
+// MarkDatasetProvingUnrecoverable's earlier siblings, resetDatasetToInitPP),
+// the only re-arm path is InitProvingPeriodTask. But InitPP computes a window
+// from config.InitChallengeWindowStart, valid ONLY for first-time init;
+// calling initProvingPeriod on a dataset whose on-chain period is already
+// initialized reverts. NextProvingPeriodTask, meanwhile, only selects rows
+// with prove_at_epoch IS NOT NULL. So a healthy-on-chain dataset stuck at
+// NULL can never re-sync to its live schedule.
+//
+// #65's syncProvenDataSetFailureState does NOT cover this: it only fires when
+// consecutive_prove_failures > 0 OR next_prove_attempt_at IS NOT NULL. The #79
+// case has zero failures and no pending backoff (the drift came from a path
+// that NULL'd prove_at_epoch without leaving failure breadcrumbs).
+//
+// Fix: read the contract's live proving schedule (the same path NextPP uses)
+// and re-arm prove_at_epoch to NextPDPChallengeWindowStart. This re-arms the
+// LOCAL ROW ONLY (no on-chain tx) so NextPP picks the dataset back up on its
+// real schedule, with no illegal re-init.
+func (t *TaskChainSync) reArmDriftedProvingSchedule(ctx context.Context) error {
+	// Candidate drift set: live-shaped rows (init_ready) that are not armed
+	// locally, not terminated, and not currently being driven by a NextPP
+	// challenge task. Zero-failure by construction here — the failure-count
+	// reconciler (#65) owns the rows with failure breadcrumbs.
+	var dataSets []struct {
+		ID int64 `db:"id"`
+	}
+	if err := t.db.SelectI(ctx, &dataSets, `SELECT id
+		FROM pdp_data_sets
+		WHERE prove_at_epoch IS NULL
+		  AND init_ready = TRUE
+		  AND challenge_request_task_id IS NULL
+		  AND unrecoverable_proving_failure_epoch IS NULL
+		  AND next_prove_attempt_at IS NULL
+		  AND consecutive_prove_failures = 0
+		ORDER BY id`); err != nil {
+		return xerrors.Errorf("failed to select drifted PDP data sets: %w", err)
+	}
+
+	if len(dataSets) == 0 {
+		return nil
+	}
+
+	pdpVerifier, err := contract.NewPDPVerifier(contract.ContractAddressesFor(t.resolvedNetwork()).PDPVerifier, t.ethClient)
+	if err != nil {
+		return xerrors.Errorf("failed to instantiate PDPVerifier contract: %w", err)
+	}
+
+	for _, dataSet := range dataSets {
+		dataSetID := big.NewInt(dataSet.ID)
+
+		// Only re-arm datasets that are actually live + proving on-chain.
+		// A dead/never-initialized dataset must NOT be re-armed here — that
+		// belongs to InitPP's first-time path.
+		live, err := pdpVerifier.DataSetLive(contract.EthCallOpts(ctx), dataSetID)
+		if err != nil {
+			return xerrors.Errorf("failed to check if data set %d is live: %w", dataSet.ID, err)
+		}
+		if !live {
+			continue
+		}
+
+		lastProvenEpoch, err := pdpVerifier.GetDataSetLastProvenEpoch(contract.EthCallOpts(ctx), dataSetID)
+		if err != nil {
+			return xerrors.Errorf("failed to get last proven epoch for data set %d: %w", dataSet.ID, err)
+		}
+		if lastProvenEpoch == nil || lastProvenEpoch.Sign() <= 0 {
+			// Never proven on-chain yet — this is a first-init case, leave it
+			// for InitPP rather than re-arming a window the chain doesn't have.
+			continue
+		}
+
+		// Resolve the live proving schedule exactly as NextPP does.
+		listenerAddr, err := pdpVerifier.GetDataSetListener(contract.EthCallOpts(ctx), dataSetID)
+		if err != nil {
+			return xerrors.Errorf("failed to get listener for data set %d: %w", dataSet.ID, err)
+		}
+		provingSchedule, err := contract.GetProvingScheduleFromListener(ctx, listenerAddr, t.ethClient)
+		if err != nil {
+			return xerrors.Errorf("failed to get proving schedule for data set %d: %w", dataSet.ID, err)
+		}
+
+		nextProveAt, err := provingSchedule.NextPDPChallengeWindowStart(contract.EthCallOpts(ctx), dataSetID)
+		if err != nil {
+			// If the contract reports the period isn't initialized, this is
+			// genuinely an init case after all — leave it to InitPP, don't
+			// fail the whole reconciler pass on one drifted row.
+			if strings.Contains(err.Error(), "0x999010d5") { // Error.ProvingPeriodNotInitialized
+				log.Warnw("drifted data set reports proving period not initialized; leaving for InitPP",
+					"dataSetId", dataSet.ID)
+				continue
+			}
+			return xerrors.Errorf("failed to get next challenge window for data set %d: %w", dataSet.ID, err)
+		}
+		if nextProveAt == nil || nextProveAt.Sign() <= 0 {
+			continue
+		}
+
+		// Re-arm the LOCAL row only. Guard the UPDATE with the same NULL/
+		// init_ready/not-terminated predicate so a concurrent NextPP/InitPP
+		// that armed the row first wins (affected=0, no clobber).
+		updated, err := t.db.ExecI(ctx, `UPDATE pdp_data_sets
+			SET prove_at_epoch = $1,
+				init_ready = FALSE
+			WHERE id = $2
+			  AND prove_at_epoch IS NULL
+			  AND init_ready = TRUE
+			  AND challenge_request_task_id IS NULL
+			  AND unrecoverable_proving_failure_epoch IS NULL`, nextProveAt.Int64(), dataSet.ID)
+		if err != nil {
+			return xerrors.Errorf("failed to re-arm prove_at_epoch for data set %d: %w", dataSet.ID, err)
+		}
+		if updated == 1 {
+			log.Infow("re-armed drift-recovered PDP data set to live proving schedule",
+				"dataSetId", dataSet.ID,
+				"lastProvenEpoch", lastProvenEpoch,
+				"nextProveAt", nextProveAt)
+		}
+	}
+
+	return nil
 }
 
 // syncFinalizedDataSetDeletionRails moves terminated PDP data sets to the local deletion-allowed state once the payment rail is final.
