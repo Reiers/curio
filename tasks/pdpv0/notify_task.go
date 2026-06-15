@@ -41,6 +41,14 @@ type PDPNotifyTask struct {
 	db     harmonyquery.DBInterface
 	TF     promise.Promise[harmonytask.AddTaskFunc]
 	client *http.Client
+
+	// kick wakes the poll loop immediately instead of waiting for the
+	// next NotifyPollInterval tick. Buffered (depth 1) and non-blocking
+	// on send, so callers (e.g. the single-binary parkcomplete writer in
+	// curio-core) can signal "a piece just completed" the instant they
+	// flip parked_pieces.complete=TRUE. Coalesces: a second kick while one
+	// is already pending is a no-op, since one scan drains all ready rows.
+	kick chan struct{}
 }
 
 func NewPDPNotifyTask(ctx context.Context, db harmonyquery.DBInterface) *PDPNotifyTask {
@@ -51,9 +59,30 @@ func NewPDPNotifyTask(ctx context.Context, db harmonyquery.DBInterface) *PDPNoti
 			IdleConnTimeout:       30 * time.Second,
 		},
 	}
-	n := &PDPNotifyTask{db: db, client: client}
+	n := &PDPNotifyTask{db: db, client: client, kick: make(chan struct{}, 1)}
 	go n.poll(ctx)
 	return n
+}
+
+// Kick wakes the poll loop to scan for ready uploads immediately,
+// bypassing the NotifyPollInterval wait. Safe to call from any
+// goroutine; non-blocking and coalescing.
+//
+// In single-binary curio-core, the same process that flips
+// parked_pieces.complete=TRUE (parkcomplete) calls Kick right after the
+// commit, collapsing the stacked parkcomplete-poll + notify-poll latency
+// (~10s worst case) down to ~one scan (~ms). In multi-node Curio the
+// writer is a different process, so the ticker poll remains the
+// authoritative path; Kick is a no-op accelerator there.
+func (t *PDPNotifyTask) Kick() {
+	if t.kick == nil {
+		return
+	}
+	select {
+	case t.kick <- struct{}{}:
+	default:
+		// A kick is already pending; one scan covers all ready rows.
+	}
 }
 
 func (t *PDPNotifyTask) poll(ctx context.Context) {
@@ -65,6 +94,7 @@ func (t *PDPNotifyTask) poll(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-t.kick:
 		}
 
 		var uploads []struct {
