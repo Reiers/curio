@@ -21,7 +21,6 @@ import (
 
 	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/deps/config"
-	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -95,7 +94,7 @@ func (P *PDPV0IPNITask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 	}
 
 	if exists && !isRm {
-		_, err = P.db.BeginTransaction(ctx, func(tx *harmonydb.Tx) (commit bool, err error) {
+		_, err = P.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
 			if err := P.recordCompletion(tx, taskID, task.ID); err != nil {
 				return false, xerrors.Errorf("recording IPNI task completion: %w", err)
 			}
