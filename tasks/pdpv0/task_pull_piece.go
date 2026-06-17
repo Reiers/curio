@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 
 	"github.com/curiostorage/harmonyquery"
+	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -30,9 +32,9 @@ import (
 	"github.com/filecoin-project/curio/tasks/tasknames"
 )
 
-const maxPullPieceTasks = 15
-
 const pullMinPieceSizeForCache = abi.PaddedPieceSize(uint64(32 * 1024 * 1024))
+
+const pullItemMaxAttempts = 3
 
 var (
 	// PullPiecePollInterval is how often to poll for new pull items.
@@ -50,6 +52,11 @@ var (
 	// duration, detecting stalled connections that hold TCP sockets open
 	// without transferring data.
 	PullIdleReadTimeout = 2 * time.Minute
+
+	// PullRetryDelayAfterFirstFailure and PullRetryDelayAfterLaterFailure bound
+	// transient source retries below the total PullItemBudget.
+	PullRetryDelayAfterFirstFailure = 30 * time.Second
+	PullRetryDelayAfterLaterFailure = 2 * time.Minute
 )
 
 // PDPPullPieceTask processes PDPv0 pull items after the handler has accepted a
@@ -78,9 +85,9 @@ var (
 //  2. expireStalePullItems: fail unscheduled items older than PullItemBudget and
 //     clean up unused pull-created refs/parked rows.
 //
-//  3. schedulePullItems: assign one Harmony task per pending piece group. A
-//     group with any active task_id is skipped so the same piece is not worked
-//     twice at the same time.
+//  3. schedulePullItems: assign one Harmony task per pending piece group whose
+//     next_attempt_at has passed. A group with any active task_id is skipped so
+//     the same piece is not worked twice at the same time.
 //
 // # Task Workflow
 //
@@ -90,10 +97,10 @@ var (
 //
 // It then claims the active long-term parked_pieces row for that piece key:
 //
-//   - If an ordinary row already exists, PullPiece attaches one parked_piece_ref
-//     per pull item and exits. ParkPiece/StorePiece continues normal processing,
-//     or a later scheduler pass marks the pull items complete if the row is
-//     already complete.
+//   - If an ordinary row from another flow (push/upload, market) already exists,
+//     PullPiece attaches one parked_piece_ref per pull item and exits.
+//     ParkPiece/StorePiece continues normal processing, or a later scheduler
+//     pass marks the pull items complete if the row is already complete.
 //
 //   - If the existing row was created by a previous PullPiece run and is still
 //     incomplete, PullPiece deletes only refs recorded on pull items for that
@@ -114,6 +121,13 @@ var (
 // succeeds. The downloaded bytes must match the declared raw size, must not have
 // extra trailing bytes, and must compute to the expected CommP.
 //
+// If no URL succeeds in a task pass, per-URL failures are recorded. Permanent
+// failures, such as bad source URLs, 404/410 responses, size mismatches, and CommP
+// mismatches, fail the affected pull items immediately. Transient failures
+// update attempt_count and next_attempt_at; after
+// pullItemMaxAttempts they become failed pull items instead of cycling until the
+// wall-clock budget expires.
+//
 // On success, Do marks parked_pieces.complete=TRUE, re-reads active pull items
 // for the piece so refs created during the task are visible, creates pdp_piecerefs,
 // and marks those pull items complete. Rows that arrive after that completion
@@ -132,17 +146,18 @@ type PDPPullPieceTask struct {
 	max int
 }
 
-func NewPDPPullPieceTask(ctx context.Context, db harmonyquery.DBInterface, sc *ffi2.SealCalls) *PDPPullPieceTask {
+func NewPDPPullPieceTask(ctx context.Context, db harmonyquery.DBInterface, sc *ffi2.SealCalls, max int) *PDPPullPieceTask {
 	t := &PDPPullPieceTask{
 		db:  db,
 		sc:  sc,
-		max: maxPullPieceTasks,
+		max: max,
 	}
 
 	go t.pollPullItems(ctx)
 	return t
 }
 
+// pollPullItems runs the scheduler maintenance passes in dependency order.
 func (t *PDPPullPieceTask) pollPullItems(ctx context.Context) {
 	ticker := time.NewTicker(PullPiecePollInterval)
 	defer ticker.Stop()
@@ -166,11 +181,50 @@ func (t *PDPPullPieceTask) pollPullItems(ctx context.Context) {
 	}
 }
 
+// pullPieceKey is the scheduling key shared by all pull items for one piece.
 type pullPieceKey struct {
 	PieceCid     string `db:"piece_cid"`
 	PieceRawSize int64  `db:"piece_raw_size"`
 }
 
+// pullSource is the active pull item shape used by Do after a group is assigned.
+type pullSource struct {
+	PieceCid     string `db:"piece_cid"`
+	PieceRawSize int64  `db:"piece_raw_size"`
+	FetchID      int64  `db:"fetch_id"`
+	Service      string `db:"service"`
+	SourceURL    string `db:"source_url"`
+	PieceRef     *int64 `db:"parked_piece_ref"`
+}
+
+// pullRetryDelayForAttempt returns the backoff after a transient source failure.
+func pullRetryDelayForAttempt(attempt int) time.Duration {
+	if attempt <= 1 {
+		return PullRetryDelayAfterFirstFailure
+	}
+	return PullRetryDelayAfterLaterFailure
+}
+
+// pullSourceErrorStage records where a source attempt failed.
+type pullSourceErrorStage int
+
+const (
+	pullSourceValidate pullSourceErrorStage = iota
+	pullSourceRequest
+	pullSourceStatus
+	pullSourceWrite
+	pullSourceVerify
+)
+
+// pullSourceError keeps the original per-URL error and facts used for retry classification.
+type pullSourceError struct {
+	sourceURL  string
+	err        error
+	statusCode int
+	stage      pullSourceErrorStage
+}
+
+// pullItemToComplete is the row shape needed to finish one accepted pull item.
 type pullItemToComplete struct {
 	FetchID       int64  `db:"fetch_id"`
 	Service       string `db:"service"`
@@ -181,6 +235,7 @@ type pullItemToComplete struct {
 	PieceRef      *int64 `db:"parked_piece_ref"`
 }
 
+// completeAlreadyParkedItems completes pull items whose long-term piece already exists.
 func (t *PDPPullPieceTask) completeAlreadyParkedItems(ctx context.Context) error {
 	_, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		var items []pullItemToComplete
@@ -221,10 +276,11 @@ func (t *PDPPullPieceTask) completeAlreadyParkedItems(ctx context.Context) error
 		}
 
 		return len(items) > 0, nil
-	}, harmonyquery.OptionRetry())
+	}, harmonydb.OptionRetry())
 	return err
 }
 
+// expireStalePullItems fails unscheduled over-budget rows and cleans pull-created refs.
 func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 	type stalePullItem struct {
 		FetchID           int64  `db:"fetch_id"`
@@ -240,6 +296,8 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 	}
 	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		var staleItems []stalePullItem
+		// The wall-clock budget is enforced only between tasks. Do can still
+		// complete an item that crosses the budget while bytes are in flight.
 		err := tx.SelectI(&staleItems, `
 			SELECT fetch_id,
 				piece_cid,
@@ -255,21 +313,42 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 		if err != nil {
 			return false, xerrors.Errorf("query stale pull items: %w", err)
 		}
-		if len(staleItems) == 0 {
+
+		var failedItems []stalePullItem
+		// Terminal failures can still carry pull-created refs if Curio died
+		// before deferred cleanup ran.
+		err = tx.SelectI(&failedItems, `
+			SELECT fetch_id,
+				piece_cid,
+				source_url,
+				parked_piece_ref,
+				pull_parked_piece_id
+			FROM pdp_piece_pull_items
+			WHERE complete = FALSE
+				AND failed = TRUE
+				AND task_id IS NULL
+				AND (parked_piece_ref IS NOT NULL OR pull_parked_piece_id IS NOT NULL)
+		`)
+		if err != nil {
+			return false, xerrors.Errorf("query failed pull items with refs: %w", err)
+		}
+		if len(staleItems) == 0 && len(failedItems) == 0 {
 			return true, nil
 		}
 
 		fetchIDs := make([]int64, 0, len(staleItems))
 		pieceCids := make([]string, 0, len(staleItems))
 		sourceURLs := make([]string, 0, len(staleItems))
+		failedFetchIDs := make([]int64, 0, len(failedItems))
+		failedPieceCids := make([]string, 0, len(failedItems))
+		failedSourceURLs := make([]string, 0, len(failedItems))
 		refIDs := make([]int64, 0, len(staleItems))
 		pieceIDs := make([]int64, 0, len(staleItems))
 		seenRefs := map[int64]struct{}{}
 		seenPieces := map[int64]struct{}{}
-		for _, item := range staleItems {
-			fetchIDs = append(fetchIDs, item.FetchID)
-			pieceCids = append(pieceCids, item.PieceCid)
-			sourceURLs = append(sourceURLs, item.SourceURL)
+		// Ref and parked-piece cleanup is shared by stale rows and rows that
+		// were already failed by source-error handling.
+		collectRefs := func(item stalePullItem) {
 			if item.PieceRef != nil {
 				if _, ok := seenRefs[*item.PieceRef]; !ok {
 					refIDs = append(refIDs, *item.PieceRef)
@@ -283,30 +362,71 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 				}
 			}
 		}
-
-		n, err := tx.ExecI(`
-			WITH stale(fetch_id, piece_cid, source_url) AS (
-				SELECT * FROM unnest($1::BIGINT[], $2::TEXT[], $3::TEXT[])
-			)
-			UPDATE pdp_piece_pull_items fi
-			SET failed = TRUE,
-				fail_reason = 'pull budget exceeded',
-				task_id = NULL,
-				parked_piece_ref = NULL,
-				pull_parked_piece_id = NULL
-			FROM stale
-			WHERE fi.fetch_id = stale.fetch_id
-				AND fi.piece_cid = stale.piece_cid
-				AND fi.source_url = stale.source_url
-				AND fi.complete = FALSE
-				AND fi.failed = FALSE
-		`, fetchIDs, pieceCids, sourceURLs)
-		if err != nil {
-			return false, xerrors.Errorf("expire stale pull items: %w", err)
+		for _, item := range staleItems {
+			fetchIDs = append(fetchIDs, item.FetchID)
+			pieceCids = append(pieceCids, item.PieceCid)
+			sourceURLs = append(sourceURLs, item.SourceURL)
+			collectRefs(item)
 		}
-		expiredCount = int64(n)
+		for _, item := range failedItems {
+			failedFetchIDs = append(failedFetchIDs, item.FetchID)
+			failedPieceCids = append(failedPieceCids, item.PieceCid)
+			failedSourceURLs = append(failedSourceURLs, item.SourceURL)
+			collectRefs(item)
+		}
+
+		if len(staleItems) > 0 {
+			// Stale open rows become terminal failures here. Already-failed
+			// rows below keep their original fail_reason.
+			n, err := tx.ExecI(`
+				WITH stale(fetch_id, piece_cid, source_url) AS (
+					SELECT * FROM unnest($1::BIGINT[], $2::TEXT[], $3::TEXT[])
+				)
+				UPDATE pdp_piece_pull_items fi
+				SET failed = TRUE,
+					fail_reason = 'pull budget exceeded',
+					task_id = NULL,
+					parked_piece_ref = NULL,
+					pull_parked_piece_id = NULL
+				FROM stale
+				WHERE fi.fetch_id = stale.fetch_id
+					AND fi.piece_cid = stale.piece_cid
+					AND fi.source_url = stale.source_url
+					AND fi.complete = FALSE
+					AND fi.failed = FALSE
+			`, fetchIDs, pieceCids, sourceURLs)
+			if err != nil {
+				return false, xerrors.Errorf("expire stale pull items: %w", err)
+			}
+			expiredCount = int64(n)
+		}
+
+		if len(failedItems) > 0 {
+			// These rows are already terminal. Only detach refs so the cleanup
+			// queries can decide whether each ref or parked row is now unused.
+			_, err := tx.ExecI(`
+				WITH failed_refs(fetch_id, piece_cid, source_url) AS (
+					SELECT * FROM unnest($1::BIGINT[], $2::TEXT[], $3::TEXT[])
+				)
+				UPDATE pdp_piece_pull_items fi
+				SET parked_piece_ref = NULL,
+					pull_parked_piece_id = NULL
+				FROM failed_refs
+				WHERE fi.fetch_id = failed_refs.fetch_id
+					AND fi.piece_cid = failed_refs.piece_cid
+					AND fi.source_url = failed_refs.source_url
+					AND fi.complete = FALSE
+					AND fi.failed = TRUE
+					AND fi.task_id IS NULL
+			`, failedFetchIDs, failedPieceCids, failedSourceURLs)
+			if err != nil {
+				return false, xerrors.Errorf("clear failed pull item refs: %w", err)
+			}
+		}
 
 		if len(refIDs) > 0 {
+			// Delete only refs that are not visible to PDP and are not still
+			// attached to an active pull item.
 			_, err = tx.ExecI(`
 				DELETE FROM parked_piece_refs pr
 				WHERE pr.ref_id = ANY($1::BIGINT[])
@@ -327,6 +447,7 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 		}
 
 		if len(pieceIDs) > 0 {
+			// Pull-owned skip rows are deleted only after their refs are gone.
 			err = tx.SelectI(&removedPieces, `
 				DELETE FROM parked_pieces pp
 				WHERE pp.id = ANY($1::BIGINT[])
@@ -341,6 +462,8 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 				return false, xerrors.Errorf("delete expired pull parked pieces: %w", err)
 			}
 
+			// If refs remain, hand the row back to ParkPiece instead of leaving
+			// a skipped parked_pieces row with no pull task able to finish it.
 			_, err = tx.ExecI(`
 				UPDATE parked_pieces pp
 				SET skip = FALSE
@@ -357,7 +480,7 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 		}
 
 		return true, nil
-	}, harmonyquery.OptionRetry())
+	}, harmonydb.OptionRetry())
 	if err != nil {
 		return err
 	}
@@ -378,8 +501,11 @@ func (t *PDPPullPieceTask) expireStalePullItems(ctx context.Context) error {
 	return nil
 }
 
+// schedulePullItems creates one Harmony task per due piece group, up to t.max.
 func (t *PDPPullPieceTask) schedulePullItems(ctx context.Context) error {
 	var activeGroups int
+	// The cap is group-based, not row-based, because all rows for the same
+	// piece share a single download attempt.
 	err := t.db.QueryRowI(ctx, `
 		SELECT COUNT(*)
 		FROM (
@@ -399,12 +525,16 @@ func (t *PDPPullPieceTask) schedulePullItems(ctx context.Context) error {
 
 	limit := t.max - activeGroups
 	var groups []pullPieceKey
+	// next_attempt_at gates whether a group is due to be scheduled. Once due,
+	// assignGroup can attach newer rows in the same group too.
 	err = t.db.SelectI(ctx, &groups, `
 		SELECT fi.piece_cid, fi.piece_raw_size
 		FROM pdp_piece_pull_items fi
 		WHERE fi.complete = FALSE
 			AND fi.failed = FALSE
 			AND fi.task_id IS NULL
+			AND fi.attempt_count < $3
+			AND fi.next_attempt_at <= NOW()
 			AND fi.created_at >= NOW() - ($2::BIGINT * INTERVAL '1 second')
 			AND NOT EXISTS (
 				SELECT 1
@@ -418,7 +548,7 @@ func (t *PDPPullPieceTask) schedulePullItems(ctx context.Context) error {
 		GROUP BY fi.piece_cid, fi.piece_raw_size
 		ORDER BY MIN(fi.created_at) ASC, MIN(fi.fetch_id) ASC, fi.piece_cid ASC
 		LIMIT $1
-	`, limit, int64(PullItemBudget.Seconds()))
+	`, limit, int64(PullItemBudget.Seconds()), pullItemMaxAttempts)
 	if err != nil {
 		return xerrors.Errorf("query pending pull item groups: %w", err)
 	}
@@ -438,19 +568,21 @@ func (t *PDPPullPieceTask) schedulePullItems(ctx context.Context) error {
 	return nil
 }
 
+// assignGroup attaches a task to every eligible row for the selected piece key.
 func (t *PDPPullPieceTask) assignGroup(tx harmonyquery.TxInterface, taskID harmonytask.TaskID, group pullPieceKey) (bool, error) {
-	// Let's double check that a complete piece does not exists
+	// If the piece completed between schedule selection and task insert, do not
+	// create another pull task. The next poll will complete the pull items.
 	completePieceID, err := findCompleteParkedPiece(tx, group)
 	if err != nil {
 		return false, err
 	}
 
-	// If it exists, we exit here
 	if completePieceID != nil {
 		return false, nil
 	}
 
-	// Schedule a single task per piece_cid and not per item
+	// Do not filter on next_attempt_at here. Once one row makes the group due,
+	// all still-eligible rows for that piece can ride on the same attempt.
 	n, err := tx.ExecI(`
 		UPDATE pdp_piece_pull_items fi
 		SET task_id = $3
@@ -459,6 +591,7 @@ func (t *PDPPullPieceTask) assignGroup(tx harmonyquery.TxInterface, taskID harmo
 			AND fi.complete = FALSE
 			AND fi.failed = FALSE
 			AND fi.task_id IS NULL
+			AND fi.attempt_count < $5
 			AND fi.created_at >= NOW() - ($4::BIGINT * INTERVAL '1 second')
 			AND NOT EXISTS (
 				SELECT 1
@@ -469,7 +602,7 @@ func (t *PDPPullPieceTask) assignGroup(tx harmonyquery.TxInterface, taskID harmo
 					AND running.failed = FALSE
 					AND running.task_id IS NOT NULL
 			)
-	`, group.PieceCid, group.PieceRawSize, taskID, int64(PullItemBudget.Seconds()))
+	`, group.PieceCid, group.PieceRawSize, taskID, int64(PullItemBudget.Seconds()), pullItemMaxAttempts)
 	if err != nil {
 		return false, xerrors.Errorf("assign pull item task: %w", err)
 	}
@@ -479,16 +612,9 @@ func (t *PDPPullPieceTask) assignGroup(tx harmonyquery.TxInterface, taskID harmo
 
 func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 
-	type pullSource struct {
-		PieceCid     string `db:"piece_cid"`
-		PieceRawSize int64  `db:"piece_raw_size"`
-		FetchID      int64  `db:"fetch_id"`
-		Service      string `db:"service"`
-		SourceURL    string `db:"source_url"`
-		PieceRef     *int64 `db:"parked_piece_ref"`
-	}
-
 	var sources []pullSource
+	// Load by assigned group, then expand back to all active rows for that
+	// group. This picks up rows that arrived after the scheduler assigned task_id.
 	err = t.db.SelectI(ctx, &sources, `
 		WITH assigned_groups AS (
 			SELECT piece_cid, piece_raw_size
@@ -514,11 +640,12 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 			JOIN pdp_piece_pulls pp ON pp.id = fi.fetch_id
 			WHERE fi.complete = FALSE
 				AND fi.failed = FALSE
+				AND fi.attempt_count < $2
 		)
 		SELECT piece_cid, piece_raw_size, fetch_id, service, source_url, parked_piece_ref
 		FROM items
 		ORDER BY created_at ASC, fetch_id ASC
-	`, taskID)
+	`, taskID, pullItemMaxAttempts)
 	if err != nil {
 		return false, xerrors.Errorf("query pull task sources: %w", err)
 	}
@@ -545,6 +672,8 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	var stalePullPiecesToRemove []int64
 	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
 		var err error
+		// Claim or create the active long-term parked row. New pull-owned rows
+		// start as skip=TRUE so ParkPiece does not race this direct download.
 		parkedPieceID, createdParkedPiece, err = parkpiece.UpsertSkipWithInserted(tx, group.PieceCid, int64(padreader.PaddedSize(uint64(group.PieceRawSize)).Padded()), group.PieceRawSize, true, true)
 		if err != nil {
 			return false, xerrors.Errorf("upsert parked piece: %w", err)
@@ -558,6 +687,9 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		var txRemovePieces []int64
 
 		for {
+			// Existing rows split into three cases:
+			// complete rows are handled by completion logic, non-pull rows are
+			// left for their owner, and previous pull-owned rows are cleaned once.
 			err = tx.QueryRowI(`
 				SELECT pp.complete,
 					pp.task_id,
@@ -584,6 +716,8 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 				return false, xerrors.Errorf("pull-owned parked piece still active after cleanup: %d", parkedPieceID)
 			}
 
+			// A previous PullPiece task created this row but did not finish it.
+			// Clear only refs recorded on pull items for that row.
 			removed, err := cleanupPullCreatedParkedPieceTx(tx, parkedPieceID)
 			if err != nil {
 				return false, xerrors.Errorf("cleanup stale pull-owned parked piece: %w", err)
@@ -599,8 +733,8 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 			cleanedPullOwnedPiece = true
 		}
 
-		// If park_piece exhausted retries before these refs were attached, clear
-		// the stale task_id so its scheduler can pick the row again.
+		// If ParkPiece's task row is gone, clear the stale task_id so its
+		// scheduler can pick this parked row again after the new refs attach.
 		if !createdParkedPiece && activeTaskID.Valid && !activeTaskExists && !activeComplete {
 			n, err := tx.ExecI(`
 				UPDATE parked_pieces
@@ -618,6 +752,8 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		}
 
 		for _, source := range sources {
+			// Each accepted pull item gets its own ref. That stays true even
+			// when another URL in the group supplies the bytes.
 			if source.PieceRef != nil && !cleanedPullOwnedPiece {
 				continue
 			}
@@ -654,7 +790,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 
 		stalePullPiecesToRemove = txRemovePieces
 		return true, nil
-	}, harmonyquery.OptionRetry())
+	}, harmonydb.OptionRetry())
 	if err != nil {
 		return false, err
 	}
@@ -669,8 +805,9 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 	}
 
 	// If the row already existed, this task only contributes refs. ParkPiece will
-	// either keep running with refs it already loaded, or retry using the newly
-	// attached refs after the stale task_id path above.
+	// keep running, retry using newly attached refs after the stale task_id path
+	// above, or the next completion pass will finish the pull items if the row is
+	// already complete.
 	if !createdParkedPiece {
 		return true, nil
 	}
@@ -693,7 +830,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 				return false, err
 			}
 			return true, nil
-		}, harmonyquery.OptionRetry())
+		}, harmonydb.OptionRetry())
 		if cleanupErr != nil {
 			log.Errorw("failed to cleanup pull parked_piece_refs", "task_id", taskID, "task_type", taskname, "error", cleanupErr)
 		}
@@ -711,7 +848,10 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 
 	attemptedSources := map[string]struct{}{}
 	var sourceErrors error
+	var sourceFailures []pullSourceError
 	for _, source := range sources {
+		// Multiple pull items can carry the same URL. Try each distinct URL
+		// once; if every URL fails, failures are recorded by source_url.
 		if _, ok := attemptedSources[source.SourceURL]; ok {
 			continue
 		}
@@ -721,76 +861,11 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 			return false, nil
 		}
 
-		// Check if the source URL is good for a download
-		parsedURL, sourceErr := url.Parse(source.SourceURL)
-		if sourceErr == nil {
-			if parsedURL.Scheme != "https" && (!pdp.PullAllowInsecure() || parsedURL.Scheme != "http") {
-				sourceErr = xerrors.Errorf("source URL must use HTTPS scheme, got: %s", parsedURL.Scheme)
-			}
-		}
-		downloadPolicy := ssrfPolicy
-		downloadPolicy.ResponseHeaderTimeout = 2 * time.Minute
-		if sourceErr == nil {
-			_, sourceErr = robusthttp.ValidateClientFetchURL(source.SourceURL, nil, &downloadPolicy)
-		}
+		sourceErr := t.tryPullSource(ctx, source.SourceURL, group, expectedCid, parkedPieceID, ssrfPolicy)
 		if sourceErr != nil {
-			log.Warnw("pull source URL rejected", "error", sourceErr, "pieceCid", group.PieceCid, "sourceURL", source.SourceURL)
-			sourceErrors = multierror.Append(sourceErrors, xerrors.Errorf("%s: %w", source.SourceURL, sourceErr))
-			continue
-		}
-
-		downloadCtx, downloadCancel := context.WithTimeout(ctx, PullAttemptTimeout)
-		client, _ := robusthttp.NewSSRFProtectedHTTPClient(&downloadPolicy, nil)
-
-		req, downloadErr := http.NewRequestWithContext(downloadCtx, http.MethodGet, source.SourceURL, nil)
-		if downloadErr == nil {
-			var resp *http.Response
-			resp, downloadErr = client.Do(req)
-			if resp != nil {
-				if downloadErr == nil && resp.StatusCode != http.StatusOK {
-					downloadErr = xerrors.Errorf("HTTP status %d from source", resp.StatusCode)
-				}
-				if downloadErr == nil && resp.ContentLength > group.PieceRawSize {
-					downloadErr = xerrors.Errorf("size mismatch: expected %d, got at least %d", group.PieceRawSize, resp.ContentLength)
-				}
-				if downloadErr == nil {
-					idleReader := &idleTimeoutReader{
-						r:      resp.Body,
-						timer:  time.AfterFunc(PullIdleReadTimeout, downloadCancel),
-						cancel: downloadCancel,
-						idle:   PullIdleReadTimeout,
-					}
-					pieceInfo, readSize, writeErr := t.sc.WriteUploadPiece(downloadCtx, storiface.PieceNumber(parkedPieceID), group.PieceRawSize, idleReader, storiface.PathStorage, true)
-					if writeErr != nil {
-						idleReader.timer.Stop()
-						downloadErr = xerrors.Errorf("write pulled piece: %w", writeErr)
-					} else {
-						if readSize != uint64(group.PieceRawSize) {
-							downloadErr = xerrors.Errorf("size mismatch: expected %d, got %d", group.PieceRawSize, readSize)
-						} else if !pieceInfo.PieceCID.Equals(expectedCid) {
-							downloadErr = xerrors.Errorf("CommP mismatch: expected %s, got %s", expectedCid, pieceInfo.PieceCID)
-						} else if pieceInfo.Size != abi.PaddedPieceSize(pdp.PadPieceSize(group.PieceRawSize)) {
-							downloadErr = xerrors.Errorf("padded size mismatch: expected %d, got %d", pdp.PadPieceSize(group.PieceRawSize), pieceInfo.Size)
-						} else {
-							var extra [1]byte
-							n, readErr := idleReader.Read(extra[:])
-							if n > 0 {
-								downloadErr = xerrors.Errorf("size mismatch: expected %d, got more", group.PieceRawSize)
-							} else if readErr != nil && readErr != io.EOF {
-								downloadErr = xerrors.Errorf("checking for oversized response: %w", readErr)
-							}
-						}
-						idleReader.timer.Stop()
-					}
-				}
-				_ = resp.Body.Close()
-			}
-		}
-		downloadCancel()
-
-		if downloadErr != nil {
-			log.Warnw("pull source URL failed", "error", downloadErr, "pieceCid", group.PieceCid, "sourceURL", source.SourceURL)
-			sourceErrors = multierror.Append(sourceErrors, xerrors.Errorf("%s: %w", source.SourceURL, downloadErr))
+			log.Warnw("pull source URL failed", "error", sourceErr.err, "pieceCid", group.PieceCid, "sourceURL", source.SourceURL)
+			sourceErrors = multierror.Append(sourceErrors, xerrors.Errorf("%s: %w", source.SourceURL, sourceErr.err))
+			sourceFailures = append(sourceFailures, *sourceErr)
 			continue
 		}
 
@@ -847,7 +922,7 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 			}
 
 			return true, nil
-		}, harmonyquery.OptionRetry())
+		}, harmonydb.OptionRetry())
 		if err != nil {
 			return false, err
 		}
@@ -862,15 +937,242 @@ func (t *PDPPullPieceTask) Do(ctx context.Context, taskID harmonytask.TaskID, st
 		return true, nil
 	}
 
-	if sourceErrors != nil {
+	if len(sourceFailures) > 0 {
+		if err := t.recordPullSourceFailures(ctx, group, sourceFailures); err != nil {
+			return false, err
+		}
 		return false, xerrors.Errorf("all pull source URLs failed: %w", sourceErrors)
 	}
 
 	return false, xerrors.Errorf("no good URL found to download the piece")
 }
 
+// tryPullSource downloads one source URL into the pull-owned parked piece.
+func (t *PDPPullPieceTask) tryPullSource(ctx context.Context, sourceURL string, group pullPieceKey, expectedCid cid.Cid, parkedPieceID int64, ssrfPolicy robusthttp.SSRFPolicy) *pullSourceError {
+	fail := func(stage pullSourceErrorStage, err error) *pullSourceError {
+		return &pullSourceError{sourceURL: sourceURL, err: err, stage: stage}
+	}
+
+	// Validation-stage errors are treated as permanent because they are request
+	// shape or policy failures, not source availability failures.
+	parsedURL, err := url.Parse(sourceURL)
+	if err != nil {
+		return fail(pullSourceValidate, err)
+	}
+	if parsedURL.Scheme != "https" && (!pdp.PullAllowInsecure() || parsedURL.Scheme != "http") {
+		return fail(pullSourceValidate, xerrors.Errorf("source URL must use HTTPS scheme, got: %s", parsedURL.Scheme))
+	}
+
+	downloadPolicy := ssrfPolicy
+	downloadPolicy.ResponseHeaderTimeout = 2 * time.Minute
+	if _, err := robusthttp.ValidateClientFetchURL(sourceURL, nil, &downloadPolicy); err != nil {
+		return fail(pullSourceValidate, err)
+	}
+
+	downloadCtx, downloadCancel := context.WithTimeout(ctx, PullAttemptTimeout)
+	defer downloadCancel()
+
+	// Request failures are classified from typed network/context errors later.
+	client, _ := robusthttp.NewSSRFProtectedHTTPClient(&downloadPolicy, nil)
+	req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return fail(pullSourceValidate, err)
+	}
+
+	resp, err := client.Do(req)
+	if resp != nil {
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+	}
+	if err != nil {
+		return fail(pullSourceRequest, err)
+	}
+
+	// HTTP status gets its own stage so retryable statuses are classified
+	// without string matching, while other statuses fail the matching rows.
+	if resp.StatusCode != http.StatusOK {
+		return &pullSourceError{
+			sourceURL:  sourceURL,
+			err:        xerrors.Errorf("HTTP status %d from source", resp.StatusCode),
+			statusCode: resp.StatusCode,
+			stage:      pullSourceStatus,
+		}
+	}
+	if resp.ContentLength > group.PieceRawSize {
+		return fail(pullSourceVerify, xerrors.Errorf("size mismatch: expected %d, got at least %d", group.PieceRawSize, resp.ContentLength))
+	}
+
+	idleReader := &idleTimeoutReader{
+		r:      resp.Body,
+		timer:  time.AfterFunc(PullIdleReadTimeout, downloadCancel),
+		cancel: downloadCancel,
+		idle:   PullIdleReadTimeout,
+	}
+	defer idleReader.timer.Stop()
+
+	// Storage/write errors are treated as transient because they can be caused
+	// by temporary local storage pressure or IO failures.
+	pieceInfo, readSize, err := t.sc.WriteUploadPiece(downloadCtx, storiface.PieceNumber(parkedPieceID), group.PieceRawSize, idleReader, storiface.PathStorage, true)
+	if err != nil {
+		return fail(pullSourceWrite, xerrors.Errorf("write pulled piece: %w", err))
+	}
+	// Verification failures mean the source did not serve the requested piece.
+	if readSize != uint64(group.PieceRawSize) {
+		return fail(pullSourceVerify, xerrors.Errorf("size mismatch: expected %d, got %d", group.PieceRawSize, readSize))
+	}
+	if !pieceInfo.PieceCID.Equals(expectedCid) {
+		return fail(pullSourceVerify, xerrors.Errorf("CommP mismatch: expected %s, got %s", expectedCid, pieceInfo.PieceCID))
+	}
+	if pieceInfo.Size != abi.PaddedPieceSize(pdp.PadPieceSize(group.PieceRawSize)) {
+		return fail(pullSourceVerify, xerrors.Errorf("padded size mismatch: expected %d, got %d", pdp.PadPieceSize(group.PieceRawSize), pieceInfo.Size))
+	}
+
+	var extra [1]byte
+	n, err := idleReader.Read(extra[:])
+	if n > 0 {
+		return fail(pullSourceVerify, xerrors.Errorf("size mismatch: expected %d, got more", group.PieceRawSize))
+	}
+	if err != nil && err != io.EOF {
+		return fail(pullSourceRequest, xerrors.Errorf("checking for oversized response: %w", err))
+	}
+
+	return nil
+}
+
+// recordPullSourceFailures applies all per-URL failures after a full source pass.
+func (t *PDPPullPieceTask) recordPullSourceFailures(ctx context.Context, group pullPieceKey, failures []pullSourceError) error {
+	var permanentURLs, permanentReasons []string
+	var transientURLs, transientReasons []string
+	// Split only after all URLs have been tried. One good source wins the group;
+	// this function is only for the all-sources-failed path.
+	for _, failure := range failures {
+		if isTransientPullSourceError(failure) {
+			transientURLs = append(transientURLs, failure.sourceURL)
+			transientReasons = append(transientReasons, failure.err.Error())
+			continue
+		}
+		permanentURLs = append(permanentURLs, failure.sourceURL)
+		permanentReasons = append(permanentReasons, failure.err.Error())
+	}
+
+	comm, err := t.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
+		if len(permanentURLs) > 0 {
+			// Permanent errors fail rows that used that exact URL. Rows for
+			// other URLs in the group are handled by their own failure result.
+			_, err := tx.ExecI(`
+				WITH failed_sources(source_url, reason) AS (
+					SELECT * FROM unnest($3::TEXT[], $4::TEXT[])
+				)
+				UPDATE pdp_piece_pull_items fi
+				SET failed = TRUE,
+					fail_reason = failed_sources.reason,
+					task_id = NULL
+				FROM failed_sources
+				WHERE fi.source_url = failed_sources.source_url
+					AND fi.piece_cid = $1
+					AND fi.piece_raw_size = $2
+					AND fi.complete = FALSE
+					AND fi.failed = FALSE
+			`, group.PieceCid, group.PieceRawSize, permanentURLs, permanentReasons)
+			if err != nil {
+				return false, xerrors.Errorf("mark permanent pull source failures: %w", err)
+			}
+		}
+
+		if len(transientURLs) > 0 {
+			// Transient rows get bounded retries. The final attempt records the
+			// real source error instead of leaving them to budget expiry.
+			_, err := tx.ExecI(`
+				WITH transient_sources(source_url, reason) AS (
+					SELECT * FROM unnest($3::TEXT[], $4::TEXT[])
+				)
+				UPDATE pdp_piece_pull_items fi
+				SET attempt_count = fi.attempt_count + 1,
+					next_attempt_at = CASE
+						WHEN fi.attempt_count + 1 >= $5 THEN fi.next_attempt_at
+						WHEN fi.attempt_count = 0 THEN NOW() + ($6::BIGINT * INTERVAL '1 second')
+						ELSE NOW() + ($7::BIGINT * INTERVAL '1 second')
+					END,
+					failed = CASE WHEN fi.attempt_count + 1 >= $5 THEN TRUE ELSE fi.failed END,
+					fail_reason = CASE WHEN fi.attempt_count + 1 >= $5 THEN transient_sources.reason ELSE fi.fail_reason END,
+					task_id = NULL
+				FROM transient_sources
+				WHERE fi.source_url = transient_sources.source_url
+					AND fi.piece_cid = $1
+					AND fi.piece_raw_size = $2
+					AND fi.complete = FALSE
+					AND fi.failed = FALSE
+					AND fi.attempt_count < $5
+			`, group.PieceCid, group.PieceRawSize, transientURLs, transientReasons, pullItemMaxAttempts, int64(pullRetryDelayForAttempt(1).Seconds()), int64(pullRetryDelayForAttempt(2).Seconds()))
+			if err != nil {
+				return false, xerrors.Errorf("record transient pull source failures: %w", err)
+			}
+		}
+
+		return true, nil
+	}, harmonydb.OptionRetry())
+	if err != nil {
+		return err
+	}
+	if !comm {
+		return xerrors.Errorf("failed to commit DB transaction")
+	}
+
+	return nil
+}
+
+// isTransientPullSourceError decides whether a failed URL should get another pass.
+func isTransientPullSourceError(failure pullSourceError) bool {
+	switch failure.stage {
+	case pullSourceStatus:
+		return failure.statusCode == http.StatusTooManyRequests || failure.statusCode == http.StatusInternalServerError
+	case pullSourceRequest:
+		return isTransientPullRequestError(failure.err)
+	case pullSourceWrite:
+		return true
+	default:
+		return false
+	}
+}
+
+// isTransientPullRequestError classifies network/request errors without strings.
+func isTransientPullRequestError(err error) bool {
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	var noAddrs *robusthttp.NoResolvedAddressError
+	if errors.As(err, &noAddrs) {
+		return true
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+
+	return false
+}
+
+// cleanupPullCreatedParkedPieceTx removes pull-owned refs from an incomplete parked row.
 func cleanupPullCreatedParkedPieceTx(tx harmonyquery.TxInterface, parkedPieceID int64) (bool, error) {
 	var refIDs []int64
+	// Only refs recorded on pull items are candidates. Refs created by other
+	// subsystems for the same parked row are left alone.
 	err := tx.SelectI(&refIDs, `
 		SELECT DISTINCT fi.parked_piece_ref
 		FROM pdp_piece_pull_items fi
@@ -883,12 +1185,13 @@ func cleanupPullCreatedParkedPieceTx(tx harmonyquery.TxInterface, parkedPieceID 
 		return false, xerrors.Errorf("query pull-created parked piece refs: %w", err)
 	}
 
+	// Clear item pointers first so terminal rows do not keep stale pull markers
+	// if a ref cannot be deleted because it has already been promoted.
 	_, err = tx.ExecI(`
 		UPDATE pdp_piece_pull_items
 		SET parked_piece_ref = NULL,
 			pull_parked_piece_id = NULL
 		WHERE complete = FALSE
-			AND failed = FALSE
 			AND pull_parked_piece_id = $1
 	`, parkedPieceID)
 	if err != nil {
@@ -896,6 +1199,7 @@ func cleanupPullCreatedParkedPieceTx(tx harmonyquery.TxInterface, parkedPieceID 
 	}
 
 	if len(refIDs) > 0 {
+		// Do not delete refs already promoted into pdp_piecerefs.
 		_, err = tx.ExecI(`
 			DELETE FROM parked_piece_refs pr
 			WHERE pr.ref_id = ANY($1::BIGINT[])
@@ -908,6 +1212,7 @@ func cleanupPullCreatedParkedPieceTx(tx harmonyquery.TxInterface, parkedPieceID 
 		}
 	}
 
+	// Remove the pull-created parked row only when all refs are gone.
 	n, err := tx.ExecI(`
 		DELETE FROM parked_pieces pp
 		WHERE pp.id = $1
@@ -923,6 +1228,7 @@ func cleanupPullCreatedParkedPieceTx(tx harmonyquery.TxInterface, parkedPieceID 
 		return true, nil
 	}
 
+	// If refs remain, make the normal ParkPiece scheduler responsible for the row.
 	_, err = tx.ExecI(`
 		UPDATE parked_pieces pp
 		SET skip = FALSE
@@ -940,6 +1246,7 @@ func cleanupPullCreatedParkedPieceTx(tx harmonyquery.TxInterface, parkedPieceID 
 	return false, nil
 }
 
+// completePullItemWithParkedPiece creates the ref records and marks one item complete.
 func completePullItemWithParkedPiece(tx harmonyquery.TxInterface, service string, fetchID int64, pieceCID string, rawSize uint64, sourceURL string, parkedPieceID int64, existingPieceRef int64) error {
 	n, err := tx.ExecI(`
 		UPDATE pdp_piece_pull_items
@@ -966,6 +1273,9 @@ func completePullItemWithParkedPiece(tx harmonyquery.TxInterface, service string
 
 	pieceRef := existingPieceRef
 	if pieceRef == 0 {
+		// Rows that were not attached during Do may not have a ref yet. Create
+		// one with their original URL even if another source URL downloaded
+		// the bytes.
 		err = tx.QueryRowI(`
 			INSERT INTO parked_piece_refs (piece_id, data_url, long_term)
 			VALUES ($1, $2, TRUE)
@@ -1006,6 +1316,7 @@ func completePullItemWithParkedPiece(tx harmonyquery.TxInterface, service string
 	return nil
 }
 
+// findCompleteParkedPiece returns the oldest complete long-term row for a piece key.
 func findCompleteParkedPiece(tx harmonyquery.TxInterface, group pullPieceKey) (*int64, error) {
 	var id int64
 	err := tx.QueryRowI(`
@@ -1053,6 +1364,7 @@ func (t *PDPPullPieceTask) Adder(taskFunc harmonytask.AddTaskFunc) {
 var _ harmonytask.TaskInterface = &PDPPullPieceTask{}
 var _ = harmonytask.Reg(&PDPPullPieceTask{})
 
+// idleTimeoutReader cancels its context when a response stalls between reads.
 type idleTimeoutReader struct {
 	r      io.Reader
 	timer  *time.Timer
@@ -1060,6 +1372,7 @@ type idleTimeoutReader struct {
 	idle   time.Duration
 }
 
+// Read resets the idle timer only after bytes are received.
 func (r *idleTimeoutReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	if n > 0 {

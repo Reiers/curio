@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -24,7 +25,7 @@ type mockPullStore struct {
 	existingPull *PullRecord
 	pullPieces   []PullPieceStatus
 	createError  error
-	backpressure bool
+	backpressure *PullBackpressure
 
 	// Tracking calls
 	createPullCalled    bool
@@ -38,12 +39,12 @@ func (m *mockPullStore) GetPullByKey(ctx context.Context, service string, hash [
 	return m.existingPull, nil
 }
 
-func (m *mockPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, bool, error) {
+func (m *mockPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, *PullBackpressure, error) {
 	m.createPullCalled = true
 	m.createdPull = pull
 	m.createdPieces = pieces
 	if m.createError != nil {
-		return 0, false, m.createError
+		return 0, nil, m.createError
 	}
 	m.lastCreatedID++
 	return m.lastCreatedID, m.backpressure, nil
@@ -69,6 +70,9 @@ func (m *mockPullStore) GetPullStatus(ctx context.Context, pullID int64) ([]Pull
 type mockValidator struct {
 	shouldPass bool
 	err        error
+	payer      common.Address
+	payerErr   error
+	payerCalls []uint64
 }
 
 func (m *mockValidator) ValidateAddPieces(ctx context.Context, params *AddPiecesValidatorParams) error {
@@ -79,6 +83,17 @@ func (m *mockValidator) ValidateAddPieces(ctx context.Context, params *AddPieces
 		return m.err
 	}
 	return errors.New("validation failed")
+}
+
+func (m *mockValidator) GetDataSetPayer(ctx context.Context, dataSetId uint64) (common.Address, error) {
+	m.payerCalls = append(m.payerCalls, dataSetId)
+	if m.payerErr != nil {
+		return common.Address{}, m.payerErr
+	}
+	if m.payer != (common.Address{}) {
+		return m.payer, nil
+	}
+	return common.HexToAddress("0x1111111111111111111111111111111111111111"), nil
 }
 
 // Valid test PieceCIDv2s
@@ -97,6 +112,12 @@ func testExtraData(t *testing.T) string {
 	extraData, err := makeTestExtraData(common.HexToAddress("0x1111111111111111111111111111111111111111"), 1)
 	require.NoError(t, err)
 	return extraData
+}
+
+func testAddPiecesOnlyExtraData(t *testing.T) string {
+	t.Helper()
+
+	return "0x" + hex.EncodeToString([]byte("add-pieces-only-extra-data"))
 }
 
 func makeTestExtraData(payer common.Address, nonce int64) (string, error) {
@@ -149,7 +170,7 @@ func testPullPieceStatus(cidV2Str string, status PullStatus) PullPieceStatus {
 }
 
 func TestHandlePull_MethodNotAllowed(t *testing.T) {
-	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true})
+	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/pdp/piece/pull", nil)
 	rec := httptest.NewRecorder()
@@ -160,7 +181,7 @@ func TestHandlePull_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandlePull_InvalidJSON(t *testing.T) {
-	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true})
+	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/pdp/piece/pull", bytes.NewBufferString("not json"))
 	rec := httptest.NewRecorder()
@@ -172,7 +193,7 @@ func TestHandlePull_InvalidJSON(t *testing.T) {
 }
 
 func TestHandlePull_MissingExtraData(t *testing.T) {
-	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true})
+	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true}, nil)
 
 	body := PullRequest{
 		ExtraData: "",
@@ -191,7 +212,7 @@ func TestHandlePull_MissingExtraData(t *testing.T) {
 }
 
 func TestHandlePull_NoPieces(t *testing.T) {
-	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true})
+	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true}, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -209,7 +230,7 @@ func TestHandlePull_NoPieces(t *testing.T) {
 }
 
 func TestHandlePull_InvalidSourceURL(t *testing.T) {
-	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true})
+	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true}, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -231,7 +252,7 @@ func TestHandlePull_InvalidSourceURL(t *testing.T) {
 func TestHandlePull_ValidatorFails(t *testing.T) {
 	store := &mockPullStore{}
 	validator := &mockValidator{shouldPass: false, err: errors.New("contract validation failed")}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -255,7 +276,7 @@ func TestHandlePull_ValidatorFails(t *testing.T) {
 func TestHandlePull_NewRequest_Success(t *testing.T) {
 	store := &mockPullStore{}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -298,8 +319,34 @@ func TestHandlePull_NewRequest_Success(t *testing.T) {
 	require.True(t, cidSet[testCid2])
 }
 
+func TestHandlePull_ExistingDataSetUsesFWSSPayer(t *testing.T) {
+	store := &mockPullStore{}
+	payer := common.HexToAddress("0x2222222222222222222222222222222222222222")
+	validator := &mockValidator{shouldPass: true, payer: payer}
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
+
+	body := PullRequest{
+		ExtraData: testAddPiecesOnlyExtraData(t),
+		DataSetId: &testDataSetId,
+		Pieces: []PullPieceRequest{
+			{PieceCid: testCid1, SourceURL: "https://example.com/piece/" + testCid1},
+		},
+	}
+	bodyBytes := must.One(json.Marshal(body))
+	req := httptest.NewRequest(http.MethodPost, "/pdp/piece/pull", bytes.NewReader(bodyBytes))
+	rec := httptest.NewRecorder()
+
+	handler.HandlePull(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.True(t, store.createPullCalled)
+	require.NotNil(t, store.createdPull)
+	require.Equal(t, payer.Hex(), store.createdPull.ClientAddress)
+	require.Equal(t, []uint64{testDataSetId}, validator.payerCalls)
+}
+
 func TestHandlePull_CreateNew_MissingRecordKeeper(t *testing.T) {
-	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true})
+	handler := NewPullHandler(&NullAuth{}, &mockPullStore{}, &mockValidator{shouldPass: true}, nil)
 
 	// dataSetId omitted (nil) requires recordKeeper
 	body := PullRequest{
@@ -334,7 +381,7 @@ func TestHandlePull_CreateNew_Success(t *testing.T) {
 	store := &mockPullStore{}
 	validator := &mockValidator{shouldPass: true}
 	// Use non-public service auth to test create-new flow without AllowedRecordKeepers restriction
-	handler := NewPullHandler(&privateServiceAuth{}, store, validator)
+	handler := NewPullHandler(&privateServiceAuth{}, store, validator, nil)
 
 	// dataSetId omitted (nil) with recordKeeper = create new dataset
 	body := PullRequest{
@@ -369,7 +416,7 @@ func TestHandlePull_Idempotent(t *testing.T) {
 		pullPieces: []PullPieceStatus{testPullPieceStatus(testCid1, PullStatusComplete)},
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -408,7 +455,7 @@ func TestHandlePull_MixedStatuses(t *testing.T) {
 		},
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -448,7 +495,7 @@ func TestHandlePull_CreateError(t *testing.T) {
 		createError: errors.New("database error"),
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -468,10 +515,10 @@ func TestHandlePull_CreateError(t *testing.T) {
 
 func TestHandlePull_Backpressure(t *testing.T) {
 	store := &mockPullStore{
-		backpressure: true,
+		backpressure: &PullBackpressure{RetryAfter: 2 * time.Minute},
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -487,6 +534,7 @@ func TestHandlePull_Backpressure(t *testing.T) {
 	handler.HandlePull(rec, req)
 
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "120", rec.Header().Get("Retry-After"))
 	require.True(t, store.createPullCalled)
 	require.False(t, store.getPullPiecesCalled)
 }
@@ -539,7 +587,7 @@ func TestHandlePull_RetryingStatus(t *testing.T) {
 		pullPieces: []PullPieceStatus{testPullPieceStatus(testCid1, PullStatusRetrying)},
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -575,7 +623,7 @@ func TestHandlePull_FailedFromPullItems(t *testing.T) {
 		pullPieces: []PullPieceStatus{testPullPieceStatus(testCid1, PullStatusFailed)},
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -612,7 +660,7 @@ func TestHandlePull_OrphanedTaskWithoutTerminalStateIsPending(t *testing.T) {
 		pullPieces: []PullPieceStatus{testPullPieceStatus(testCid1, PullStatusPending)},
 	}
 	validator := &mockValidator{shouldPass: true}
-	handler := NewPullHandler(&NullAuth{}, store, validator)
+	handler := NewPullHandler(&NullAuth{}, store, validator, nil)
 
 	body := PullRequest{
 		ExtraData: testExtraData(t),
@@ -638,7 +686,8 @@ func TestHandlePull_OrphanedTaskWithoutTerminalStateIsPending(t *testing.T) {
 }
 
 func TestComputeOverallStatus_Priority(t *testing.T) {
-	// Test that status priority is: failed > retrying > inProgress > pending > complete
+	// Failed pieces are terminal per-piece results. The batch only becomes
+	// terminal after every piece is complete or failed.
 	tests := []struct {
 		name           string
 		pieceStatuses  []PullStatus
@@ -665,8 +714,18 @@ func TestComputeOverallStatus_Priority(t *testing.T) {
 			expectedStatus: PullStatusRetrying,
 		},
 		{
-			name:           "failed overrides all",
+			name:           "failed does not override active work",
 			pieceStatuses:  []PullStatus{PullStatusComplete, PullStatusInProgress, PullStatusRetrying, PullStatusFailed},
+			expectedStatus: PullStatusRetrying,
+		},
+		{
+			name:           "partial failure with completed pieces is complete",
+			pieceStatuses:  []PullStatus{PullStatusComplete, PullStatusFailed},
+			expectedStatus: PullStatusComplete,
+		},
+		{
+			name:           "all failed makes batch failed",
+			pieceStatuses:  []PullStatus{PullStatusFailed, PullStatusFailed},
 			expectedStatus: PullStatusFailed,
 		},
 		{

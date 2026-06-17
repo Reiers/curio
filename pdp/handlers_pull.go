@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
-
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -16,6 +16,7 @@ import (
 	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/pdp/contract"
+	"github.com/filecoin-project/curio/pdp/contract/FWSS"
 )
 
 // getPDPSenderAddress retrieves the PDP key address from the database
@@ -48,6 +49,9 @@ type AddPiecesValidator interface {
 	// ValidateAddPieces performs an eth_call to validate the extraData
 	// Returns nil if validation passes, error otherwise
 	ValidateAddPieces(ctx context.Context, params *AddPiecesValidatorParams) error
+
+	// GetDataSetPayer returns the FWSS payer for an existing data set.
+	GetDataSetPayer(ctx context.Context, dataSetId uint64) (common.Address, error)
 }
 
 // EthCallValidator validates via eth_call to PDPVerifier contract
@@ -107,8 +111,14 @@ func (v *EthCallValidator) ValidateAddPieces(ctx context.Context, params *AddPie
 		return fmt.Errorf("failed to pack addPieces call: %w", err)
 	}
 
-	// eth_call to validate — match tx value used for dataset creation (no sybil fee)
+	// eth_call to validate — match tx value used for dataset creation
 	value := big.NewInt(0)
+	if isCreateNew {
+		value, err = contract.FilCleanupDeposit(ctx, v.ethClient)
+		if err != nil {
+			return fmt.Errorf("reading FIL cleanup deposit: %w", err)
+		}
+	}
 	msg := ethereum.CallMsg{
 		From:  v.senderAddr,
 		To:    new(contract.ContractAddressesFor(v.resolvedNetwork()).PDPVerifier),
@@ -124,21 +134,51 @@ func (v *EthCallValidator) ValidateAddPieces(ctx context.Context, params *AddPie
 	return nil
 }
 
+func (v *EthCallValidator) GetDataSetPayer(ctx context.Context, dataSetId uint64) (common.Address, error) {
+	if dataSetId == 0 {
+		return common.Address{}, fmt.Errorf("dataSetId must be greater than 0")
+	}
+
+	serviceAddr := contract.ContractAddresses().AllowedPublicRecordKeepers.FWSService
+	viewAddr, err := contract.ResolveViewAddress(ctx, serviceAddr, v.ethClient)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("resolve FWSS view address: %w", err)
+	}
+
+	fwssView, err := FWSS.NewFilecoinWarmStorageServiceStateView(viewAddr, v.ethClient)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("bind FWSS state view: %w", err)
+	}
+
+	dataSet, err := fwssView.GetDataSet(contract.EthCallOpts(ctx), new(big.Int).SetUint64(dataSetId))
+	if err != nil {
+		return common.Address{}, fmt.Errorf("get FWSS data set %d: %w", dataSetId, err)
+	}
+	if dataSet.Payer == (common.Address{}) {
+		return common.Address{}, fmt.Errorf("data set %d payer is zero address", dataSetId)
+	}
+
+	return dataSet.Payer, nil
+}
+
 // PullHandler handles piece pull requests
 type PullHandler struct {
 	auth      Auth
 	store     PullStore
 	validator AddPiecesValidator
 	network   contract.Network
+	db        harmonyquery.DBInterface
 }
 
 // NewPullHandler creates a new PullHandler. Pass an empty network
-// string to fall back to contract.NetworkFromBuildType().
-func NewPullHandler(auth Auth, store PullStore, validator AddPiecesValidator) *PullHandler {
+// string to fall back to contract.NetworkFromBuildType(). db is used
+// for dataset-ownership verification (verifyDataSetForService).
+func NewPullHandler(auth Auth, store PullStore, validator AddPiecesValidator, db harmonyquery.DBInterface) *PullHandler {
 	return &PullHandler{
 		auth:      auth,
 		store:     store,
 		validator: validator,
+		db:        db,
 	}
 }
 
@@ -317,11 +357,6 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	extraDataHash := sha256.Sum256(extraDataBytes)
-	payer, err := FWSSPayerFromExtraData(extraDataBytes)
-	if err != nil {
-		httpServerError(w, http.StatusBadRequest, "Invalid extraData payer: "+err.Error(), err)
-		return
-	}
 
 	// Build idempotency key components
 	var dataSetId uint64
@@ -344,6 +379,31 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 	if existingPull != nil {
 		// Return existing status
 		h.respondWithStatus(ctx, w, existingPull.ID)
+		return
+	}
+
+	if dataSetId > 0 && h.db != nil {
+		if err := verifyDataSetForService(ctx, h.db, service, dataSetId); err != nil {
+			switch {
+			case errors.Is(err, ErrDataSetNotFound):
+				httpServerError(w, http.StatusNotFound, "Data set not found", err)
+			case errors.Is(err, ErrDataSetTerminated):
+				http.Error(w, err.Error(), http.StatusConflict)
+			default:
+				httpServerError(w, http.StatusInternalServerError, "Failed to retrieve data set: "+err.Error(), err)
+			}
+			return
+		}
+	}
+
+	var payer common.Address
+	if dataSetId == 0 {
+		payer, err = FWSSPayerFromExtraData(extraDataBytes)
+	} else {
+		payer, err = h.validator.GetDataSetPayer(ctx, dataSetId)
+	}
+	if err != nil {
+		httpServerError(w, http.StatusBadRequest, "Invalid pull payer: "+err.Error(), err)
 		return
 	}
 
@@ -379,7 +439,7 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build pull pieces for database storage (v1 CID + raw size + source URL for task to pick up)
+	// Build normalized pull pieces for persistence.
 	pullPieces := make([]PullPiece, len(pieceInfos))
 	for i, info := range pieceInfos {
 		pullPieces[i] = PullPiece{
@@ -405,9 +465,9 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if backpressure {
-		log.Warnw("pull queue backpressure", "client", pullRecord.ClientAddress)
-		w.Header().Set("Retry-After", "60")
+	if backpressure != nil {
+		log.Warnw("pull queue backpressure", "client", pullRecord.ClientAddress, "retryAfter", backpressure.RetryAfter)
+		w.Header().Set("Retry-After", fmt.Sprint(int(backpressure.RetryAfter.Seconds())))
 		http.Error(w, "pull queue backpressure", http.StatusTooManyRequests)
 		return
 	}
@@ -416,7 +476,7 @@ func (h *PullHandler) HandlePull(w http.ResponseWriter, r *http.Request) {
 	// by piece, attach refs to parked_pieces, and download when PullPiece owns
 	// the parked row.
 
-	// Return status
+	// The pull has been accepted; return the current status.
 	h.respondWithStatus(ctx, w, pullID)
 }
 

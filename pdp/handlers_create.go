@@ -66,14 +66,19 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 		return
 	}
 
+	if len(reqBody.Pieces) == 0 {
+		httpServerError(w, http.StatusBadRequest, "At least one piece must be provided", err)
+		return
+	}
+	if len(reqBody.Pieces) > MaxAddPiecesBatchSize {
+		errMsg := fmt.Sprintf("piece count (%d) exceeds the maximum allowed per CreateDataSetAndAddPieces call (%d)", len(reqBody.Pieces), MaxAddPiecesBatchSize)
+		httpServerError(w, http.StatusBadRequest, errMsg, err)
+		return
+	}
+
 	extraDataBytes, err := decodeExtraData(reqBody.ExtraData)
 	if err != nil {
 		httpServerError(w, http.StatusBadRequest, "Invalid extraData format (must be hex encoded)", err)
-		return
-	}
-	if len(extraDataBytes) > MaxAddPiecesExtraDataSize {
-		errMsg := fmt.Sprintf("extraData size (%d bytes) exceeds the maximum allowed limit for CreateDataSetAndAddPieces (%d bytes)", len(extraDataBytes), MaxAddPiecesExtraDataSize)
-		httpServerError(w, http.StatusBadRequest, errMsg, err)
 		return
 	}
 
@@ -112,19 +117,20 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 		return
 	}
 
-	// msg.value = 0.1 FIL (FIL_CLEANUP_DEPOSIT in PDPVerifier v3.4.0).
-	// v3.2.0 deployments accepted USDFC sybil-fee routing and silently
-	// ignored msg.value; v3.4.0 REQUIRES msg.value >= FIL_CLEANUP_DEPOSIT
-	// for any path that creates a new dataset (createDataSet OR
-	// addPieces with NEW_DATA_SET_SENTINEL). Excess is refunded by the
-	// contract.
-	//
-	// SybilFee() returns 0.1 FIL by historical naming; the same value
-	// is now the cleanup deposit. See FilOzone/pdp CHANGELOG v3.4.0.
+	// msg.value = FIL_CLEANUP_DEPOSIT, read dynamically from the on-chain
+	// PDPVerifier (v3.4.0+ REQUIRES msg.value >= FIL_CLEANUP_DEPOSIT for any
+	// path that creates a new dataset; excess is refunded). Address stays
+	// runtime-network-aware via ContractAddressesFor(p.Network()).
+	cleanupDeposit, err := contract.FilCleanupDeposit(workCtx, p.ethClient)
+	if err != nil {
+		httpServerError(w, http.StatusInternalServerError, "Failed to read FIL cleanup deposit: "+err.Error(), err)
+		return
+	}
+
 	tx := types.NewTransaction(
 		0,
 		contract.ContractAddressesFor(p.Network()).PDPVerifier,
-		contract.SybilFee(),
+		cleanupDeposit,
 		0,
 		nil,
 		data,
@@ -287,15 +293,18 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Prepare the transaction (nonce will be set to 0, SenderETH will assign it).
-	//
-	// msg.value = 0.1 FIL (FIL_CLEANUP_DEPOSIT in PDPVerifier v3.4.0).
-	// v3.2.0 deployments accepted USDFC sybil-fee routing and silently
-	// ignored msg.value; v3.4.0 REQUIRES msg.value >= FIL_CLEANUP_DEPOSIT.
-	// Excess is refunded by the contract. See FilOzone/pdp CHANGELOG v3.4.0.
+	// msg.value = FIL_CLEANUP_DEPOSIT, read dynamically (v3.4.0+); address stays
+	// runtime-network-aware via ContractAddressesFor(p.Network()).
+	cleanupDeposit, err := contract.FilCleanupDeposit(workCtx, p.ethClient)
+	if err != nil {
+		httpServerError(w, http.StatusInternalServerError, "Failed to read FIL cleanup deposit: "+err.Error(), err)
+		return
+	}
+
 	tx := types.NewTransaction(
 		0,
 		contract.ContractAddressesFor(p.Network()).PDPVerifier,
-		contract.SybilFee(),
+		cleanupDeposit,
 		0,
 		nil,
 		data,

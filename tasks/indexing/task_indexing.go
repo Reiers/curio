@@ -27,8 +27,8 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
 
-	"github.com/filecoin-project/curio/deps/config"
 	"github.com/curiostorage/harmonyquery"
+	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -749,7 +749,7 @@ func (i *IndexingTask) TypeDetails() harmonytask.TaskTypeDetails {
 		Name:      tasknames.Indexing,
 		MayFollow: []string{tasknames.CommitBatch, tasknames.UpdateBatch},
 		Cost: resources.Resources{
-			Cpu: 1,
+			Cpu: 0,
 			Ram: uint64(i.insertBatchSize * i.insertConcurrency * 56 * 2),
 		},
 		Max:         i.max,

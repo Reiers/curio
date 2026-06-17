@@ -1,8 +1,10 @@
 package pdp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -324,6 +326,65 @@ func TestPullRequest_Validate(t *testing.T) {
 	}
 }
 
+func TestPullRequest_ValidateBatchLimit(t *testing.T) {
+	const validCid = "bafkzcibf6x7poaqtr2pqm6qki6sgetps74xutpclzrwbux5ow6rw4nsfu6tbf2zfnmnq"
+	dataSetId := uint64(1)
+
+	// Distinct source URLs so the batch-size check is isolated from the
+	// duplicate and per-piece checks that run afterwards.
+	pieces := make([]PullPieceRequest, MaxAddPiecesBatchSize+1)
+	for i := range pieces {
+		pieces[i] = PullPieceRequest{
+			PieceCid:  validCid,
+			SourceURL: fmt.Sprintf("https://sp.example.com/piece/%s?n=%d", validCid, i),
+		}
+	}
+	req := PullRequest{ExtraData: "0x1234", DataSetId: &dataSetId, Pieces: pieces}
+
+	err := req.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds the maximum allowed per pull")
+}
+
+func TestPullRetryAfter(t *testing.T) {
+	tests := []struct {
+		name     string
+		pending  int
+		limit    int
+		expected time.Duration
+	}{
+		{name: "at limit", pending: 120, limit: 120, expected: time.Minute},
+		{name: "slightly over", pending: 121, limit: 120, expected: time.Minute},
+		{name: "second bucket", pending: 131, limit: 120, expected: 2 * time.Minute},
+		{name: "capped", pending: 200, limit: 120, expected: 5 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, pullRetryAfter(tt.pending, tt.limit))
+		})
+	}
+}
+
+func TestPullEffectiveClientPendingLimit(t *testing.T) {
+	tests := []struct {
+		name         string
+		otherPending int
+		expected     int
+	}{
+		{name: "empty queue", otherPending: 0, expected: 108},
+		{name: "some other work", otherPending: 20, expected: 88},
+		{name: "reserve mostly used", otherPending: 98, expected: 10},
+		{name: "never below normal cap", otherPending: 120, expected: 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, pullEffectiveClientPendingLimit(tt.otherPending))
+		})
+	}
+}
+
 func TestPullResponse_ComputeOverallStatus(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -366,6 +427,46 @@ func TestPullResponse_ComputeOverallStatus(t *testing.T) {
 				{PieceCid: "cid2", Status: PullStatusPending},
 			},
 			expectedStatus: PullStatusPending,
+		},
+		{
+			name: "some complete some failed is complete",
+			pieces: []PullPieceStatus{
+				{PieceCid: "cid1", Status: PullStatusComplete},
+				{PieceCid: "cid2", Status: PullStatusFailed},
+			},
+			expectedStatus: PullStatusComplete,
+		},
+		{
+			name: "failed with inProgress is inProgress",
+			pieces: []PullPieceStatus{
+				{PieceCid: "cid1", Status: PullStatusFailed},
+				{PieceCid: "cid2", Status: PullStatusInProgress},
+			},
+			expectedStatus: PullStatusInProgress,
+		},
+		{
+			name: "failed with pending is pending",
+			pieces: []PullPieceStatus{
+				{PieceCid: "cid1", Status: PullStatusFailed},
+				{PieceCid: "cid2", Status: PullStatusPending},
+			},
+			expectedStatus: PullStatusPending,
+		},
+		{
+			name: "failed with retrying is retrying",
+			pieces: []PullPieceStatus{
+				{PieceCid: "cid1", Status: PullStatusFailed},
+				{PieceCid: "cid2", Status: PullStatusRetrying},
+			},
+			expectedStatus: PullStatusRetrying,
+		},
+		{
+			name: "all failed",
+			pieces: []PullPieceStatus{
+				{PieceCid: "cid1", Status: PullStatusFailed},
+				{PieceCid: "cid2", Status: PullStatusFailed},
+			},
+			expectedStatus: PullStatusFailed,
 		},
 		{
 			name: "single complete",

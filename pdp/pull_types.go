@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/curiostorage/harmonyquery"
 	"github.com/ipfs/go-cid"
@@ -18,6 +19,7 @@ import (
 
 	commcid "github.com/filecoin-project/go-fil-commcid"
 
+	"github.com/filecoin-project/curio/harmony/harmonydb"
 )
 
 // pullAllowInsecure relaxes security validations for development/testing environments.
@@ -175,10 +177,13 @@ func (r *PullRequest) Validate() error {
 	if len(r.Pieces) == 0 {
 		return fmt.Errorf("at least one piece is required")
 	}
+	if len(r.Pieces) > MaxAddPiecesBatchSize {
+		return fmt.Errorf("piece count (%d) exceeds the maximum allowed per pull (%d)", len(r.Pieces), MaxAddPiecesBatchSize)
+	}
 
 	// Validate each piece (CID format validation is done later by ParsePieceCidV2).
 	// The same piece may appear more than once with different source URLs so
-	// PullPiece can try all supplied sources. An exact duplicate is not useful
+	// the server can try all supplied sources. An exact duplicate is not useful
 	// and would collide with the pull item primary key.
 	seenPieceSources := make(map[string]struct{}, len(r.Pieces))
 	for i, piece := range r.Pieces {
@@ -220,7 +225,7 @@ type PullRecord struct {
 	ExtraDataHash []byte
 	DataSetId     uint64 // 0 = create new
 	RecordKeeper  string // address, required when DataSetId is 0
-	ClientAddress string // FWSS payer address from extraData
+	ClientAddress string // FWSS payer address
 }
 
 // PullPiece represents a piece stored in a pull request (v1 CID + raw size for v2 reconstruction)
@@ -233,9 +238,17 @@ type PullPiece struct {
 const (
 	// Admission counts active unique (piece_cid, piece_raw_size) keys plus
 	// the incoming request's unique keys before inserting new pull rows.
-	pullGlobalPendingLimit    = 128
-	pullPerClientPendingLimit = 10
+	pullGlobalPendingLimit          = 120
+	pullPerClientPendingLimit       = 10
+	pullSoloClientPendingPercentage = 90
+	pullRetryAfterMin               = time.Minute
+	pullRetryAfterMax               = 5 * time.Minute
+	pullRetryAfterStepPieces        = 10
 )
+
+type PullBackpressure struct {
+	RetryAfter time.Duration
+}
 
 // PullStore abstracts database operations for the pull handler
 type PullStore interface {
@@ -243,49 +256,60 @@ type PullStore interface {
 	GetPullByKey(ctx context.Context, service string, hash []byte, dataSetId uint64, recordKeeper string) (*PullRecord, error)
 
 	// CreatePullWithPieces creates a pull record and its associated piece items in a transaction.
-	// It returns the created pull ID and whether admission was rejected due to pull backpressure.
-	CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, bool, error)
+	// It returns the created pull ID and pull backpressure details when admission is rejected.
+	CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, *PullBackpressure, error)
 
 	// GetPullStatus retrieves all piece statuses associated with a pull record.
 	GetPullStatus(ctx context.Context, pullID int64) ([]PullPieceStatus, error)
 }
 
-// ComputeOverallStatus derives the overall status from individual piece statuses.
-// Priority: failed > retrying > inProgress > pending > complete
+// ComputeOverallStatus derives the batch status from individual piece statuses.
+// The batch only reaches a terminal status after every piece is terminal. At
+// that point any successful piece makes the batch complete; failed pieces remain
+// visible in per-piece status.
 func (r *PullResponse) ComputeOverallStatus() {
 	if len(r.Pieces) == 0 {
 		r.Status = PullStatusPending
 		return
 	}
 
-	allComplete := true
-	anyFailed := false
-	anyRetrying := false
-	anyInProgress := false
+	completeCount := 0
+	failedCount := 0
+	hasPending := false
+	hasInProgress := false
+	hasRetrying := false
 
 	for _, p := range r.Pieces {
-		if p.Status != PullStatusComplete {
-			allComplete = false
-		}
 		switch p.Status {
+		case PullStatusComplete:
+			completeCount++
 		case PullStatusFailed:
-			anyFailed = true
+			failedCount++
 		case PullStatusRetrying:
-			anyRetrying = true
+			hasRetrying = true
 		case PullStatusInProgress:
-			anyInProgress = true
+			hasInProgress = true
+		case PullStatusPending:
+			hasPending = true
+		default:
+			hasPending = true
 		}
 	}
 
-	if allComplete {
-		r.Status = PullStatusComplete
-	} else if anyFailed {
-		r.Status = PullStatusFailed
-	} else if anyRetrying {
+	// Non-terminal pieces keep the batch non-terminal. Terminal status is only
+	// chosen after every piece is either complete or failed.
+	switch {
+	case hasRetrying:
 		r.Status = PullStatusRetrying
-	} else if anyInProgress {
+	case hasInProgress:
 		r.Status = PullStatusInProgress
-	} else {
+	case hasPending:
+		r.Status = PullStatusPending
+	case failedCount == len(r.Pieces):
+		r.Status = PullStatusFailed
+	case completeCount > 0:
+		r.Status = PullStatusComplete
+	default:
 		r.Status = PullStatusPending
 	}
 }
@@ -334,16 +358,16 @@ func (s *dbPullStore) GetPullByKey(ctx context.Context, service string, hash []b
 	}, nil
 }
 
-func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, bool, error) {
+func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord, pieces []PullPiece) (int64, *PullBackpressure, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var pullID int64
-	var backpressure bool
+	var backpressure *PullBackpressure
 	var existing bool
 
-	comm, err := s.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (bool, error) {
-		err := tx.QueryRowI(`
+	comm, err := s.db.BeginTransactionI(ctx, func(tx harmonyquery.TxInterface) (commit bool, err error) {
+		err = tx.QueryRowI(`
 			INSERT INTO pdp_piece_pulls (service, extra_data_hash, data_set_id, record_keeper, client_address)
 			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (service, extra_data_hash, data_set_id, record_keeper) DO NOTHING
@@ -368,20 +392,16 @@ func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord
 			return false, fmt.Errorf("insert pull: %w", err)
 		}
 
-		var bpErr error
-		backpressure, bpErr = s.enforceBackpressure(tx, pull, pieces)
-		if bpErr != nil {
-			return false, bpErr
-		}
+		backpressure, err = s.enforceBackpressure(tx, pull, pieces)
 		if err != nil {
 			return false, err
 		}
 
-		if backpressure {
+		if backpressure != nil {
 			return false, nil
 		}
 
-		// Insert piece items with raw size and source_url for task to pick up
+		// Insert piece items with raw size and source URL for processing.
 		for _, piece := range pieces {
 			_, err := tx.ExecI(`
 				INSERT INTO pdp_piece_pull_items (fetch_id, piece_cid, piece_raw_size, source_url)
@@ -393,25 +413,25 @@ func (s *dbPullStore) CreatePullWithPieces(ctx context.Context, pull *PullRecord
 		}
 
 		return true, nil
-	}, harmonyquery.OptionRetry())
+	}, harmonydb.OptionRetry())
 
 	if err != nil {
-		return pullID, false, xerrors.Errorf("insert pull items: %w", err)
+		return pullID, nil, xerrors.Errorf("insert pull items: %w", err)
 	}
 
 	if existing {
-		return pullID, false, nil
+		return pullID, nil, nil
 	}
 
-	if !comm && !backpressure {
-		return pullID, false, xerrors.Errorf("failed to commit the transaction")
+	if !comm && backpressure == nil {
+		return pullID, nil, xerrors.Errorf("failed to commit the transaction")
 	}
 
-	if backpressure {
-		return pullID, true, nil
+	if backpressure != nil {
+		return pullID, backpressure, nil
 	}
 
-	return pullID, false, nil
+	return pullID, nil, nil
 }
 
 func (s *dbPullStore) GetPullStatus(ctx context.Context, pullID int64) ([]PullPieceStatus, error) {
@@ -476,12 +496,16 @@ func pullStatusFromItem(complete, failed bool, taskID *int64, taskExists bool, r
 	return PullStatusPending
 }
 
-func (s *dbPullStore) enforceBackpressure(tx harmonyquery.TxInterface, pull *PullRecord, pieces []PullPiece) (bool, error) {
+// enforceBackpressure decides whether a new pull can be admitted without
+// exceeding global or per-client pending-piece limits.
+func (s *dbPullStore) enforceBackpressure(tx harmonyquery.TxInterface, pull *PullRecord, pieces []PullPiece) (*PullBackpressure, error) {
 	type pieceKey struct {
 		cid     string
 		rawSize uint64
 	}
 
+	// Backpressure is counted by unique piece key, not by URL or pull item.
+	// Multiple URLs for the same piece should not consume multiple slots.
 	seen := make(map[pieceKey]struct{}, len(pieces))
 	pieceCids := make([]string, 0, len(pieces))
 	rawSizes := make([]int64, 0, len(pieces))
@@ -496,42 +520,40 @@ func (s *dbPullStore) enforceBackpressure(tx harmonyquery.TxInterface, pull *Pul
 	}
 
 	if len(pieceCids) == 0 {
-		return false, nil
+		return nil, nil
 	}
 
-	// SQLite-portable rewrite: upstream uses Postgres unnest() over
-	// []string + []int64 array bindings. SQLite has no array types,
-	// so we build a parameterized VALUES list inline. The list is
-	// always small (handful of CIDs per pull session) so the SQL
-	// stays compact. Each piece contributes 2 params; the trailing
-	// param is the client_address.
-	valuesParts := make([]string, 0, len(pieceCids))
-	queryArgs := make([]interface{}, 0, len(pieceCids)*2+1)
-	for i := range pieceCids {
-		valuesParts = append(valuesParts, "(?, ?)")
-		queryArgs = append(queryArgs, pieceCids[i], rawSizes[i])
-	}
-	queryArgs = append(queryArgs, pull.ClientAddress)
-	incomingValues := strings.Join(valuesParts, ", ")
-
-	var globalPending, clientPending int
-	sqlText := `
-		WITH incoming(piece_cid, piece_raw_size) AS (
-			VALUES ` + incomingValues + `
+	var globalPending, clientPending, otherPending int
+	// Count the post-admission state in one query:
+	// - globalPending: all active unique pieces plus this request's unique pieces
+	// - clientPending: this client's active unique pieces plus this request
+	// - otherPending: active unique pieces owned by all other clients
+	err := tx.QueryRowI(`
+		WITH incoming AS (
+			SELECT DISTINCT piece_cid, piece_raw_size
+			FROM unnest($1::TEXT[], $2::BIGINT[]) AS t(piece_cid, piece_raw_size)
 		),
 		global_active AS (
 			SELECT DISTINCT fi.piece_cid, fi.piece_raw_size
 			FROM pdp_piece_pull_items fi
-			WHERE fi.complete = 0
-				AND fi.failed = 0
+			WHERE fi.complete = FALSE
+				AND fi.failed = FALSE
 		),
 		client_active AS (
 			SELECT DISTINCT fi.piece_cid, fi.piece_raw_size
 			FROM pdp_piece_pull_items fi
 			JOIN pdp_piece_pulls fp ON fp.id = fi.fetch_id
-			WHERE fi.complete = 0
-				AND fi.failed = 0
-				AND fp.client_address = ?
+			WHERE fi.complete = FALSE
+				AND fi.failed = FALSE
+				AND fp.client_address = $3
+		),
+		other_active AS (
+			SELECT DISTINCT fi.piece_cid, fi.piece_raw_size
+			FROM pdp_piece_pull_items fi
+			JOIN pdp_piece_pulls fp ON fp.id = fi.fetch_id
+			WHERE fi.complete = FALSE
+				AND fi.failed = FALSE
+				AND fp.client_address <> $3
 		),
 		global_combined AS (
 			SELECT piece_cid, piece_raw_size FROM global_active
@@ -545,18 +567,58 @@ func (s *dbPullStore) enforceBackpressure(tx harmonyquery.TxInterface, pull *Pul
 		)
 		SELECT
 			(SELECT COUNT(*) FROM global_combined),
-			(SELECT COUNT(*) FROM client_combined)
-	`
-	err := tx.QueryRowI(harmonyquery.RawString(sqlText), queryArgs...).Scan(&globalPending, &clientPending)
+			(SELECT COUNT(*) FROM client_combined),
+			(SELECT COUNT(*) FROM other_active)
+	`, pieceCids, rawSizes, pull.ClientAddress).Scan(&globalPending, &clientPending, &otherPending)
 	if err != nil {
-		return false, fmt.Errorf("count pull pending pieces: %w", err)
+		return nil, fmt.Errorf("count pull pending pieces: %w", err)
 	}
+	// The global limit is absolute. A request is rejected if accepting it would
+	// push total active unique pieces over the node-wide cap.
 	if globalPending > pullGlobalPendingLimit {
-		return true, nil
-	}
-	if clientPending > pullPerClientPendingLimit {
-		return true, nil
+		return &PullBackpressure{RetryAfter: pullRetryAfter(globalPending, pullGlobalPendingLimit)}, nil
 	}
 
-	return false, nil
+	// The per-client limit is soft while the node is otherwise empty. A client
+	// can borrow unused slots up to the solo-client ceiling, but other clients'
+	// pending pieces reduce that allowance.
+	clientLimit := pullEffectiveClientPendingLimit(otherPending)
+	if clientPending > clientLimit {
+		return &PullBackpressure{RetryAfter: pullRetryAfter(clientPending, clientLimit)}, nil
+	}
+
+	return nil, nil
+}
+
+func pullClientBorrowLimit() int {
+	return pullGlobalPendingLimit * pullSoloClientPendingPercentage / 100
+}
+
+// pullEffectiveClientPendingLimit returns how many unique pending pieces one
+// client may hold after accounting for capacity already used by other clients.
+func pullEffectiveClientPendingLimit(otherPending int) int {
+	limit := pullClientBorrowLimit() - otherPending
+	if limit < pullPerClientPendingLimit {
+		return pullPerClientPendingLimit
+	}
+	return limit
+}
+
+// pullRetryAfter suggests how long a rejected pull should wait: 1 minute per 10
+// pieces over the limit, clamped to [1, 5] minutes.
+func pullRetryAfter(pending, limit int) time.Duration {
+	over := pending - limit
+	if over <= 0 {
+		return pullRetryAfterMin
+	}
+
+	minutes := 1 + (over-1)/pullRetryAfterStepPieces
+	retryAfter := time.Duration(minutes) * time.Minute
+	if retryAfter < pullRetryAfterMin {
+		return pullRetryAfterMin
+	}
+	if retryAfter > pullRetryAfterMax {
+		return pullRetryAfterMax
+	}
+	return retryAfter
 }
