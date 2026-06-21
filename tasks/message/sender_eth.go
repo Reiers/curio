@@ -138,8 +138,31 @@ func (s *SendTaskETH) Do(ctx context.Context, taskID harmonytask.TaskID, stillOw
 			assignedNonce = *dbNonce + 1
 		}
 
-		// Update the transaction with the assigned nonce
-		tx = types.NewTransaction(assignedNonce, *tx.To(), tx.Value(), tx.Gas(), tx.GasPrice(), tx.Data())
+		// Update the transaction with the assigned nonce.
+		//
+		// IMPORTANT: preserve the EIP-1559 (DynamicFeeTx) shape built in
+		// prepareEthTransaction. The previous code rebuilt a *legacy* tx via
+		// types.NewTransaction(..., tx.GasPrice(), ...), which froze a single
+		// gasPrice. On Filecoin the base fee drifts between prepare and send;
+		// a frozen legacy gasPrice that dips below the live base fee leaves
+		// the tx permanently stuck in the mpool (observed: gasPrice=144 vs
+		// live base fee ~160-183 → never mined). A DynamicFeeTx lets the
+		// GasFeeCap headroom absorb base-fee rises so the tx stays minable.
+		if tx.Type() == types.DynamicFeeTxType {
+			tx = types.NewTx(&types.DynamicFeeTx{
+				ChainID:   tx.ChainId(),
+				Nonce:     assignedNonce,
+				GasFeeCap: tx.GasFeeCap(),
+				GasTipCap: tx.GasTipCap(),
+				Gas:       tx.Gas(),
+				To:        tx.To(),
+				Value:     tx.Value(),
+				Data:      tx.Data(),
+			})
+		} else {
+			// Legacy fallback (non-EIP-1559 inputs).
+			tx = types.NewTransaction(assignedNonce, *tx.To(), tx.Value(), tx.Gas(), tx.GasPrice(), tx.Data())
+		}
 
 		// Sign the transaction
 		signedTx, err = s.signTransaction(ethCtx, fromAddress, tx)
@@ -369,8 +392,11 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 			return common.Hash{}, xerrors.Errorf("estimating gas premium: %w", err)
 		}
 
-		// Calculate GasFeeCap (maxFeePerGas)
-		gasFeeCap := new(big.Int).Add(baseFee, gasTipCap)
+		// Calculate GasFeeCap (maxFeePerGas) with base-fee headroom.
+		// Lotus uses ~2x base fee so the cap survives base-fee rises between
+		// prepare and inclusion (Filecoin base fee can climb over a few
+		// epochs). cap = 2*baseFee + tip.
+		gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
 
 		chainID, err := s.client.NetworkID(ctx)
 		if err != nil {
