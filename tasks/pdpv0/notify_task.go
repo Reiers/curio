@@ -152,17 +152,38 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		CheckHashCodec string  `db:"check_hash_codec" json:"check_hash_codec"`
 		CheckHash      []byte  `db:"check_hash" json:"check_hash"`
 		PieceRawSize   uint64  `db:"piece_raw_size" json:"piece_raw_size"`
+		// ParkedPieceCID is the CommP computed by the park pipeline and
+		// stored on parked_pieces. For streaming uploads the CommP is
+		// unknown at upload time, so pdp_piece_uploads.piece_cid is NULL and
+		// the authoritative CommP only lands here. pdp_piecerefs.piece_cid is
+		// NOT NULL, so we MUST use this value (not pu.piece_cid) or the ref
+		// insert fails and add-pieces can never find the piece for the
+		// service ("subPiece CID ... not found or does not belong to service").
+		ParkedPieceCID string `db:"parked_piece_cid" json:"parked_piece_cid"`
 	}
 	err = t.db.QueryRowI(ctx, `
         SELECT pu.id, pu.service, pu.piece_cid, pu.notify_url, pu.piece_ref, pu.check_hash_codec, pu.check_hash,
-               pp.piece_raw_size
+               pp.piece_raw_size, pp.piece_cid AS parked_piece_cid
         FROM pdp_piece_uploads pu
         JOIN parked_piece_refs ppr ON ppr.ref_id = pu.piece_ref
         JOIN parked_pieces pp ON pp.id = ppr.piece_id
         WHERE pu.notify_task_id = $1`, taskID).Scan(
-		&upload.ID, &upload.Service, &upload.PieceCID, &upload.NotifyURL, &upload.PieceRef, &upload.CheckHashCodec, &upload.CheckHash, &upload.PieceRawSize)
+		&upload.ID, &upload.Service, &upload.PieceCID, &upload.NotifyURL, &upload.PieceRef, &upload.CheckHashCodec, &upload.CheckHash, &upload.PieceRawSize, &upload.ParkedPieceCID)
 	if err != nil {
 		return false, fmt.Errorf("failed to query pdp_piece_uploads for task %d: %w", taskID, err)
+	}
+
+	// Resolve the authoritative piece CID for the service ref. Prefer the
+	// upload's static CommP when present (caller supplied
+	// sha2-256-trunc254-padded); otherwise use the park-computed CommP
+	// (streaming upload, the common curio-core path). pdp_piecerefs.piece_cid
+	// is NOT NULL.
+	refPieceCID := upload.ParkedPieceCID
+	if upload.PieceCID != nil && *upload.PieceCID != "" {
+		refPieceCID = *upload.PieceCID
+	}
+	if refPieceCID == "" {
+		return false, fmt.Errorf("notify task %d: no piece CID on upload %s or parked_pieces (CommP not computed)", taskID, upload.ID)
 	}
 
 	// Perform HTTP Post request to the notify URL
@@ -198,7 +219,7 @@ func (t *PDPNotifyTask) Do(ctx context.Context, taskID harmonytask.TaskID, still
 		_, err = tx.ExecI(`
         INSERT INTO pdp_piecerefs (service, piece_cid, piece_ref, created_at, needs_save_cache)
         VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4)`,
-			upload.Service, upload.PieceCID, upload.PieceRef, needsSaveCache)
+			upload.Service, refPieceCID, upload.PieceRef, needsSaveCache)
 		if err != nil {
 			return false, fmt.Errorf("failed to insert into pdp_piecerefs: %w", err)
 		}
