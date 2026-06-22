@@ -383,8 +383,17 @@ func createSignedTransaction(ctx context.Context, ethClient ethchain.EthClient, 
 		return nil, xerrors.Errorf("estimating gas premium: %w", err)
 	}
 
-	// Calculate GasFeeCap (maxFeePerGas)
-	gasFeeCap := big.NewInt(0).Add(baseFee, gasTipCap)
+	// Calculate GasFeeCap (maxFeePerGas) with base-fee headroom.
+	// Filecoin's base fee drifts between estimate and inclusion; on
+	// mainnet a feeCap pinned to exactly baseFee+tip strands the tx in
+	// the mpool the moment the base fee ticks up (observed: gasPrice 144
+	// vs live base fee ~160-183, never mined). Lotus uses 2*baseFee+tip so
+	// the cap absorbs several epochs of base-fee rise. This mirrors the
+	// fix already applied to the Filecoin-message path in
+	// tasks/message/sender_eth.go (c5f7abfc); createSignedTransaction is
+	// the shared builder for ALL PDP contract txs (incl. the prove tx) and
+	// had been missed by that fix. cap = 2*baseFee + tip.
+	gasFeeCap := new(mbig.Int).Add(new(mbig.Int).Mul(baseFee, mbig.NewInt(2)), gasTipCap)
 
 	chainID, err := ethClient.NetworkID(ctx)
 	if err != nil {
