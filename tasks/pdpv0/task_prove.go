@@ -317,7 +317,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 
 	log.Debugw("PDPv0_Prove: generating proofs", "dataSetId", dataSetId, "challengeEpoch", challengeEpoch, "totalLeaves", totalLeaves, "numChallenges", contract.NumChallenges)
 
-	proofs, err := p.GenerateProofs(ctx, pdpVerifier, dataSetId, seed, totalLeaves, contract.NumChallenges)
+	proofs, err := p.GenerateProofs(ctx, pdpVerifier, dataSetId, challengeEpoch, seed, totalLeaves, contract.NumChallenges)
 	if err != nil {
 		return false, xerrors.Errorf("failed to generate proofs: %w", err)
 	}
@@ -437,6 +437,17 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 		return false, nil
 	}
 
+	// HIGH-VISIBILITY diagnostic: log the full proof payload about to be
+	// submitted on-chain so any revert can be investigated post-hoc.
+	// gasLimit is determined inside sender.Send → createSignedTransaction.
+	log.Infow("PDP prove diag: submitting",
+		"dataSetID", dataSetId,
+		"numProofs", len(proofs),
+		"proofs", proofLogs,
+		"calldataHex", hex.EncodeToString(data),
+		"gasLimit", "set_by_sender",
+	)
+
 	reason := "pdp-prove"
 	txHash, sendErr := p.sender.Send(ctx, fromAddress, txEth, reason)
 	if sendErr != nil {
@@ -480,7 +491,7 @@ func (p *ProveTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwne
 	return true, nil
 }
 
-func (p *ProveTask) GenerateProofs(ctx context.Context, pdpService *contract.PDPVerifier, dataSetId int64, seed abi.Randomness, totalLeaves uint64, numChallenges int) ([]contract.IPDPTypesProof, error) {
+func (p *ProveTask) GenerateProofs(ctx context.Context, pdpService *contract.PDPVerifier, dataSetId int64, challengeEpoch *big.Int, seed abi.Randomness, totalLeaves uint64, numChallenges int) ([]contract.IPDPTypesProof, error) {
 	proofs := make([]contract.IPDPTypesProof, numChallenges)
 
 	log.Debugw("GenerateProofs starting", "dataSetId", dataSetId, "numChallenges", numChallenges, "totalLeaves", totalLeaves)
@@ -490,6 +501,16 @@ func (p *ProveTask) GenerateProofs(ctx context.Context, pdpService *contract.PDP
 	})
 
 	log.Debugw("GenerateProofs: challenge indices computed", "dataSetId", dataSetId, "challenges", challenges)
+	// HIGH-VISIBILITY diagnostic log so the next proof attempt is fully
+	// diagnosable at default log level. Includes seed, challenge epoch,
+	// leaf count and all challenge indices.
+	log.Infow("PDP prove diag: challenge",
+		"dataSetID", dataSetId,
+		"challengeEpoch", challengeEpoch,
+		"seedHex", hex.EncodeToString(seed),
+		"totalLeaves", totalLeaves,
+		"challenges", challenges,
+	)
 
 	pieceId, err := pdpService.FindPieceIds(contract.EthCallOpts(ctx), big.NewInt(dataSetId), lo.Map(challenges, func(i int64, _ int) *big.Int { return big.NewInt(i) }))
 	if err != nil {
@@ -724,6 +745,22 @@ func (p *ProveTask) provePiece(ctx context.Context, dataSetId int64, pieceId int
 	isIdxNotNull := p.idx != nil
 	isLargeSubPiece := uint64(challSubPiece.SubPieceSize) > MinSizeForCache && challSubPiece.PieceRawSize > 0
 	isUsingCachedProof := isIdxNotNull && isLargeSubPiece
+
+	// HIGH-VISIBILITY diagnostic so the next proof attempt captures
+	// sub-piece selection at INFO level.
+	log.Infow("PDP prove diag: subpiece",
+		"dataSetId", dataSetId,
+		"pieceId", pieceId,
+		"challengedLeaf", challengedLeaf,
+		"pieceChallengeOffset", pieceChallengeOffset,
+		"subPieceCount", len(subPieces),
+		"challSubPieceIdx", challSubPieceIdx,
+		"subPieceOffset", challSubPiece.SubPieceOffset,
+		"subPieceSize", challSubPiece.SubPieceSize,
+		"subPieceChallengedLeaf", subPieceChallengedLeaf,
+		"removed", challSubPiece.Removed,
+		"usingCachedProof", isUsingCachedProof,
+	)
 
 	// Try cached approach for large sub-pieces
 	if isUsingCachedProof {
