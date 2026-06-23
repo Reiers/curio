@@ -393,7 +393,36 @@ func createSignedTransaction(ctx context.Context, ethClient ethchain.EthClient, 
 	// tasks/message/sender_eth.go (c5f7abfc); createSignedTransaction is
 	// the shared builder for ALL PDP contract txs (incl. the prove tx) and
 	// had been missed by that fix. cap = 2*baseFee + tip.
+	//
+	// Additionally enforce absolute floors: on Filecoin mainnet at low
+	// congestion baseFee≈100 attoFIL and SuggestGasTipCap returns ~0, so
+	// the computed feeCap can come out at ~200 attoFIL — dangerously thin
+	// headroom if the base fee rises between estimation and inclusion.
+	// A 1 gwei-equiv (1_000_000_000 attoFIL) floor gives generous headroom
+	// while remaining negligible in absolute FIL cost.
+	const (
+		// minFeeCap is the absolute floor for gasFeeCap (maxFeePerGas).
+		// 1_000_000_000 attoFIL ≈ 1 Gwei-equivalent; prevents tx stranding
+		// when baseFee is very low on mainnet.
+		minFeeCapVal = 1_000_000_000
+		// minTipCapVal ensures gasTipCap is never zero; a non-zero tip
+		// keeps the tx competitive in the Filecoin EVM mempool.
+		minTipCapVal = 100_000
+	)
+	minFeeCap := mbig.NewInt(minFeeCapVal)
+	minTipCap := mbig.NewInt(minTipCapVal)
+
+	// Enforce tip floor first (before feeCap calculation).
+	if gasTipCap.Cmp(minTipCap) < 0 {
+		gasTipCap = minTipCap
+	}
+
 	gasFeeCap := new(mbig.Int).Add(new(mbig.Int).Mul(baseFee, mbig.NewInt(2)), gasTipCap)
+
+	// Enforce feeCap floor: max(gasFeeCap, minFeeCap).
+	if gasFeeCap.Cmp(minFeeCap) < 0 {
+		gasFeeCap = minFeeCap
+	}
 
 	chainID, err := ethClient.NetworkID(ctx)
 	if err != nil {
