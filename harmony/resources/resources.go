@@ -92,21 +92,76 @@ func RegisterWithResources(db harmonyquery.DBInterface, hostnameAndPort string, 
 		logger.Infow("Cleaned up machines", "count", cleaned)
 	}
 	go func() {
+		// consecutiveKeepaliveFailures counts consecutive UPDATE errors.
+		// Resets to 0 on any success. Used to emit a loud alert when
+		// task dispatch is likely to stall (LOOKS_DEAD_TIMEOUT).
+		consecutiveKeepaliveFailures := 0
+		const keepaliveDegradedThreshold = 3
+
 		for {
 			time.Sleep(time.Minute)
 			if reg.shutdown.Load() {
 				return
 			}
-			// SQLite-portable placeholder (curio-core#76). The Postgres
-			// $1 form does not bind under modernc.org/sqlite, so this
-			// keepalive silently no-op'd and CleanupMachines reaped the
-			// node. (curio-core's engine bypasses RegisterWithResources
-			// entirely and runs its own keepalive, but fix this too so
-			// any direct caller stays correct on both backends.)
-			_, err := db.ExecI(ctx, `UPDATE harmony_machines SET last_contact=CURRENT_TIMESTAMP where id=?`, reg.MachineID)
-			if err != nil {
-				logger.Error("Cannot keepalive ", err)
+
+			// Recover from any panic inside the tick body so the
+			// goroutine NEVER exits due to a DB-layer panic. A dead
+			// keepalive goroutine silently freezes last_contact and
+			// causes LOOKS_DEAD_TIMEOUT to reap this node.
+			var tickErr error
+			var rowsAffected int
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Errorw("machine keepalive panic recovered — goroutine continuing",
+							"machineID", reg.MachineID, "panic", r)
+						tickErr = xerrors.Errorf("panic: %v", r)
+					}
+				}()
+				// SQLite-portable placeholder (curio-core#76). The Postgres
+				// $1 form does not bind under modernc.org/sqlite, so this
+				// keepalive silently no-op'd and CleanupMachines reaped the
+				// node. (curio-core's engine bypasses RegisterWithResources
+				// entirely and runs its own keepalive, but fix this too so
+				// any direct caller stays correct on both backends.)
+				var n int
+				n, tickErr = db.ExecI(ctx, `UPDATE harmony_machines SET last_contact=CURRENT_TIMESTAMP where id=?`, reg.MachineID)
+				rowsAffected = n
+			}()
+
+			if tickErr != nil {
+				// Treat a recovered panic the same as an exec error.
+				consecutiveKeepaliveFailures++
+				logger.Errorw("machine keepalive UPDATE failed",
+					"machineID", reg.MachineID, "err", tickErr,
+					"consecutiveFailures", consecutiveKeepaliveFailures)
+				if consecutiveKeepaliveFailures >= keepaliveDegradedThreshold {
+					logger.Errorw("machine keepalive DEGRADED — task dispatch will stall if this continues",
+						"machineID", reg.MachineID,
+						"consecutiveFailures", consecutiveKeepaliveFailures,
+						"looks_dead_timeout", LOOKS_DEAD_TIMEOUT)
+				}
+				continue
 			}
+
+			if rowsAffected == 0 {
+				// Our row was reaped by CleanupMachines (LOOKS_DEAD_TIMEOUT).
+				// Re-registration is handled by RegisterWithResources restart;
+				// log loudly so operators know the node self-healed.
+				consecutiveKeepaliveFailures++
+				logger.Warnw("machine keepalive row missing — this node may have been reaped; re-inserting on next restart",
+					"machineID", reg.MachineID,
+					"consecutiveFailures", consecutiveKeepaliveFailures)
+				continue
+			}
+
+			// Success path.
+			if consecutiveKeepaliveFailures > 0 {
+				logger.Infow("machine keepalive recovered",
+					"machineID", reg.MachineID,
+					"priorConsecutiveFailures", consecutiveKeepaliveFailures)
+			}
+			consecutiveKeepaliveFailures = 0
 		}
 	}()
 
