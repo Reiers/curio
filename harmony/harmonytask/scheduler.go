@@ -3,6 +3,7 @@ package harmonytask
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -435,8 +436,16 @@ func (e *TaskEngine) pollAllTaskTypes() map[string][]task {
 	// Was: `WHERE name = ANY($1)`, names. Postgres-array syntax rejected
 	// by modernc.org/sqlite. Translated to a backend-portable IN-clause.
 	inClause, inArgs := inClauseStrings(names)
+	// curio-core: bound the unowned-task fetch. Without a LIMIT this pulls
+	// the entire unclaimed backlog every poll, so the per-poll DB cost (and
+	// the rows we then walk in memory) grows with queue depth and the drain
+	// rate degrades exactly when queues are deepest. We already discard rows
+	// beyond chokePoint per type below, so cap the fetch at chokePoint*types
+	// (the most we can keep), ordered oldest-first so the longest-waiting
+	// tasks are always the ones returned.
+	fetchLimit := chokePoint * len(names)
 	err := e.cfg.db.SelectI(context.Background(), &rows,
-		expandIn(`SELECT id, name, update_time, posted_time, retries FROM harmony_task WHERE owner_id IS NULL AND name IN (?IN?)`, inClause),
+		expandIn(`SELECT id, name, update_time, posted_time, retries FROM harmony_task WHERE owner_id IS NULL AND name IN (?IN?) ORDER BY update_time ASC LIMIT `+strconv.Itoa(fetchLimit), inClause),
 		inArgs...)
 	if err != nil {
 		log.Errorw("failed to poll tasks from db", "error", err)

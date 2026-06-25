@@ -359,6 +359,14 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 	}
 
 	if tx.Gas() == 0 {
+		// curio-core: bound the gas/fee-preparation RPC calls below with a
+		// timeout context. EstimateGas in particular can hang on a slow or
+		// unhealthy eth RPC; on a TimeSensitive lane (PDP proving period) an
+		// unbounded estimate wedges the whole lane behind one stuck call.
+		// The DB task-add and inclusion-wait below stay on the parent ctx.
+		rpcCtx, rpcCancel := context.WithTimeout(ctx, defaultEthCallTimeout)
+		defer rpcCancel()
+
 		// Estimate gas limit
 		msg := ethereum.CallMsg{
 			From:  fromAddress,
@@ -367,7 +375,7 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 			Data:  tx.Data(),
 		}
 
-		gasLimit, err := s.client.EstimateGas(ctx, msg)
+		gasLimit, err := s.client.EstimateGas(rpcCtx, msg)
 		if err != nil {
 			return common.Hash{}, fmt.Errorf("failed to estimate gas: %w", err)
 		}
@@ -376,7 +384,7 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 		}
 
 		// Fetch current base fee
-		header, err := s.client.HeaderByNumber(ctx, nil)
+		header, err := s.client.HeaderByNumber(rpcCtx, nil)
 		if err != nil {
 			return common.Hash{}, fmt.Errorf("failed to get latest block header: %w", err)
 		}
@@ -387,7 +395,7 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 		}
 
 		// Set GasTipCap (maxPriorityFeePerGas)
-		gasTipCap, err := s.client.SuggestGasTipCap(ctx)
+		gasTipCap, err := s.client.SuggestGasTipCap(rpcCtx)
 		if err != nil {
 			return common.Hash{}, xerrors.Errorf("estimating gas premium: %w", err)
 		}
@@ -398,7 +406,7 @@ func (s *SenderETH) Send(ctx context.Context, fromAddress common.Address, tx *ty
 		// epochs). cap = 2*baseFee + tip.
 		gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
 
-		chainID, err := s.client.NetworkID(ctx)
+		chainID, err := s.client.NetworkID(rpcCtx)
 		if err != nil {
 			return common.Hash{}, xerrors.Errorf("getting network ID: %w", err)
 		}

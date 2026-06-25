@@ -546,6 +546,14 @@ func (n *NextProvingPeriodTask) TypeDetails() harmonytask.TaskTypeDetails {
 		Name:          tasknames.PDPv0_ProvPeriod,
 		TimeSensitive: true,
 		MayFollow:     []string{tasknames.PDPv0_Prove},
+		// curio-core: bound proving-period concurrency. After a restart the
+		// scheduler can re-claim every dataset's pending ProvPeriod task at
+		// once; if the eth sender is briefly stuck (e.g. a slow EstimateGas or
+		// an un-includable tx ahead of it in the nonce queue) the unbounded
+		// fan-out piles work onto the wedged lane instead of letting it drain.
+		// A cap of 16 keeps the lane responsive while still clearing a deep
+		// backlog of datasets within a few poll cycles.
+		Max: taskhelp.Max(16),
 		Cost: resources.Resources{
 			Cpu: 0,
 			Gpu: 0,
