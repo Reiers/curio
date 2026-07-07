@@ -11,13 +11,14 @@ import (
 
 	"github.com/filecoin-project/go-state-types/builtin"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
-	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
 	"github.com/filecoin-project/curio/lib/filecoinpayment"
 	"github.com/filecoin-project/curio/lib/paths/alertinginterface"
 	"github.com/filecoin-project/curio/pdp/contract"
 	"github.com/filecoin-project/curio/pdp/contract/FWSS"
+	"github.com/filecoin-project/curio/tasks/pdpv0"
 
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
@@ -42,15 +43,24 @@ type mwe struct {
 	Success *bool `db:"tx_success"`
 }
 
-func NewSettleWatcher(db *harmonydb.DB, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, al alertinginterface.AlertingInterface) {
-	at := al.AddAlertType(alertName, alertType)
-	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
-		err := processPendingTransactions(ctx, db, ethClient, al, at)
+func NewSettleWatcher(w *pdpv0.Watcher) {
+	if err := w.AddWatcher(func(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, al alertinginterface.AlertingInterface, revert, apply *chainTypes.TipSet) {
+		// The settle watcher's DB access path (processPendingTransactions ->
+		// verifySettle) is written against the concrete pgx-backed *harmonydb.DB.
+		// The pdpv0 Watcher is only ever constructed with a *harmonydb.DB on the
+		// upstream curio binary (curio-core does not wire the settle watcher), so
+		// the assertion always succeeds there.
+		hdb, ok := db.(*harmonydb.DB)
+		if !ok {
+			log.Errorf("settle watcher requires *harmonydb.DB, got %T", db)
+			return
+		}
+		at := al.AddAlertType(alertName, alertType)
+		err := processPendingTransactions(ctx, hdb, ethClient, al, at)
 		if err != nil {
 			log.Warnf("Failed to process pending settle transactions: %s", err)
 		}
-		return nil
-	}); err != nil {
+	}, pdpv0.WatcherOrderPaymentSettle); err != nil {
 		panic(err)
 	}
 }

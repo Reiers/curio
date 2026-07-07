@@ -16,11 +16,11 @@ import (
 
 	commcid "github.com/filecoin-project/go-fil-commcid"
 
-	"github.com/filecoin-project/curio/deps/config"
 	"github.com/curiostorage/harmonyquery"
+	"github.com/filecoin-project/curio/deps/config"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
-	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
+	"github.com/filecoin-project/curio/lib/paths/alertinginterface"
 	"github.com/filecoin-project/curio/lib/urlhelper"
 	"github.com/filecoin-project/curio/market/indexstore"
 	"github.com/filecoin-project/curio/market/ipni/ipniculib"
@@ -29,13 +29,16 @@ import (
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-// NewPieceDeleteWatcher registers a tipset handler for piece-deletion
-// reconciliation. Currently a no-op while the cleanup logic is debugged
-// (see body comment). network is reserved for the on-chain PDPVerifier
-// address lookup when the cleanup logic is re-enabled.
-func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, idx indexstore.Backend, network contract.Network) {
+const alertNameCleanupPieces = "CleanupPieces"
+
+// NewPieceDeleteWatcher registers a CleanupPieces-phase watcher for
+// piece-deletion reconciliation. The on-chain cleanup pass is currently a
+// no-op while the cleanup logic is debugged (see body comment). network is
+// reserved for the on-chain PDPVerifier address lookup when the cleanup logic
+// is re-enabled.
+func NewPieceDeleteWatcher(w *Watcher, cfg *config.HTTPConfig, idx indexstore.Backend, network contract.Network) {
 	_ = network // reserved for re-enabled cleanup path; see _processPendingCleanup
-	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
+	if err := w.AddWatcher(func(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, al alertinginterface.AlertingInterface, revert, apply *chainTypes.TipSet) {
 		// Zen: processPendingCleanup is currently disabled because we want to debug an observation
 		// that removed pieces cause unexpected proving failures. Rather than just comment out the
 		// DB delete we comment out the whole function call because otherwise the PDPVerifier liveness
@@ -46,13 +49,15 @@ func NewPieceDeleteWatcher(cfg *config.HTTPConfig, db harmonyquery.DBInterface, 
 		// 	log.Warnf("Failed to process pending piece cleanup: %s", err)
 		// }
 
+		at := al.AddAlertType(alertNameCleanupPieces, alertType)
 		err := processIndexingAndIPNICleanup(ctx, db, cfg, idx)
 		if err != nil {
 			log.Warnf("Failed to process indexing and IPNI cleanup: %s", err)
+			al.Raise(at, map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
-
-		return nil
-	}); err != nil {
+	}, WatcherOrderCleanupPieces); err != nil {
 		panic(err)
 	}
 }

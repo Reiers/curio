@@ -4,11 +4,17 @@ import (
 	"context"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
+	"github.com/filecoin-project/curio/lib/paths/alertinginterface"
 	"github.com/filecoin-project/curio/pdp/contract"
 
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
+)
+
+const (
+	alertType              = "PDPV0"
+	alertNameCreateDataSet = "CreateDataSet"
+	alertNameAddPiece      = "AddPiece"
 )
 
 // NewDataSetWatch runs processing steps for data set creation and piece addition.
@@ -17,22 +23,29 @@ import (
 //
 // network selects the on-chain contract addresses; pass the empty
 // string to fall back to contract.NetworkFromBuildType().
-func NewDataSetWatch(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, network contract.Network) {
+func NewDataSetWatch(w *Watcher, network contract.Network) {
 	if network == "" {
 		network = contract.NetworkFromBuildType()
 	}
-	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
+	if err := w.AddWatcher(func(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, al alertinginterface.AlertingInterface, revert, apply *chainTypes.TipSet) {
+		cat := al.AddAlertType(alertNameCreateDataSet, alertType)
 		err := processPendingDataSetCreates(ctx, network, db, ethClient)
 		if err != nil {
-			log.Warnf("Failed to process pending data set creates: %v", err)
+			log.Errorf("Failed to process pending data set creates: %v", err)
+			al.Raise(cat, map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
 
+		adat := al.AddAlertType(alertNameAddPiece, alertType)
 		err = processPendingDataSetPieceAdds(ctx, network, db, ethClient)
 		if err != nil {
-			log.Warnf("Failed to process pending data set piece adds: %v", err)
+			log.Errorf("Failed to process pending data set piece adds: %v", err)
+			al.Raise(adat, map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
-		return nil
-	}); err != nil {
+	}, WatcherOrderCreateAndAdd); err != nil {
 		panic(err)
 	}
 }

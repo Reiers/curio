@@ -12,28 +12,33 @@ import (
 
 	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
-	"github.com/filecoin-project/curio/lib/chainsched"
 	"github.com/filecoin-project/curio/lib/ethchain"
+	"github.com/filecoin-project/curio/lib/paths/alertinginterface"
 	"github.com/filecoin-project/curio/pdp/contract"
 
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
 
-// NewDataSetDeleteWatcher registers a tipset handler that reconciles
+const alertNameDataSetDelete = "DataSetDelete"
+
+// NewDataSetDeleteWatcher registers a Delete-phase watcher that reconciles
 // pdp_delete_data_set rows against the on-chain PDPVerifier state.
 // network selects the on-chain contract addresses; pass the empty
 // string to fall back to contract.NetworkFromBuildType().
-func NewDataSetDeleteWatcher(db harmonyquery.DBInterface, ethClient ethchain.EthClient, pcs *chainsched.CurioChainSched, network contract.Network) {
+func NewDataSetDeleteWatcher(w *Watcher, network contract.Network) {
 	if network == "" {
 		network = contract.NetworkFromBuildType()
 	}
-	if err := pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
+	if err := w.AddWatcher(func(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, al alertinginterface.AlertingInterface, revert, apply *chainTypes.TipSet) {
+		at := al.AddAlertType(alertNameDataSetDelete, alertType)
 		err := processPendingDeletes(ctx, network, db, ethClient)
 		if err != nil {
 			log.Warnf("Failed to process pending data set delete: %s", err)
+			al.Raise(at, map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
-		return nil
-	}); err != nil {
+	}, WatcherOrderDelete); err != nil {
 		panic(err)
 	}
 }

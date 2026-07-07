@@ -22,7 +22,8 @@ import (
 	"context"
 
 	"github.com/curiostorage/harmonyquery"
-	"github.com/filecoin-project/curio/lib/chainsched"
+	"github.com/filecoin-project/curio/lib/ethchain"
+	"github.com/filecoin-project/curio/lib/paths/alertinginterface"
 
 	chainTypes "github.com/filecoin-project/lotus/chain/types"
 )
@@ -52,16 +53,18 @@ import (
 //
 // Logs each recovery event at WARN so operators can correlate with
 // the original MaxFailures error in their journals.
-func NewLifecycleSweeper(db harmonyquery.DBInterface, pcs *chainsched.CurioChainSched) error {
-	return pcs.AddHandler(func(ctx context.Context, revert, apply *chainTypes.TipSet) error {
+// NewLifecycleSweeper registers the recovery passes as a CleanupPieces-phase
+// watcher so their re-arm/reconciliation runs before the Proving-phase
+// handlers inspect the DB on the same tipset.
+func NewLifecycleSweeper(w *Watcher) error {
+	return w.AddWatcher(func(ctx context.Context, db harmonyquery.DBInterface, ethClient ethchain.EthClient, al alertinginterface.AlertingInterface, revert, apply *chainTypes.TipSet) {
 		if err := sweepOrphanedProvableDataSets(ctx, db); err != nil {
 			log.Warnf("lifecycle sweeper: sweepOrphanedProvableDataSets: %v", err)
 		}
 		if err := sweepStuckNotifyUploads(ctx, db); err != nil {
 			log.Warnf("lifecycle sweeper: sweepStuckNotifyUploads: %v", err)
 		}
-		return nil
-	})
+	}, WatcherOrderCleanupPieces)
 }
 
 // sweepOrphanedProvableDataSets finds pdp_data_sets rows in the

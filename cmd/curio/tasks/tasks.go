@@ -367,16 +367,24 @@ func StartTasks(ctx context.Context, dependencies *deps.Deps, shutdownChan chan 
 			// (the same behaviour as before the pdpv0-network refactor).
 			// Curio Core threads an explicit network value through its own
 			// task wiring (internal/pdpwire.BuildChainDeps).
-			pdpv0.NewDataSetWatch(db, must.One(dependencies.EthClient.Val()), chainSched, "")
+			//
+			// All PDPv0 chain handlers now run through the async ordered
+			// watcher so chain-derived state is reconciled (create/add ->
+			// terminate -> settle -> delete -> cleanup) before the proving
+			// callbacks inspect the DB on the same tipset.
+			pdpWatcher := pdpv0.NewPDPv0Watcher(db, must.One(dependencies.EthClient.Val()), chainSched, dependencies.Al)
 
-			pay.NewSettleWatcher(db, must.One(dependencies.EthClient.Val()), chainSched, dependencies.Al)
-			pdpv0.NewDataSetDeleteWatcher(db, must.One(dependencies.EthClient.Val()), chainSched, "")
-			pdpv0.NewTerminateServiceWatcher(db, must.One(dependencies.EthClient.Val()), chainSched, "")
-			pdpv0.NewPieceDeleteWatcher(&cfg.HTTP, db, must.One(dependencies.EthClient.Val()), chainSched, iStore, "")
+			pdpv0.NewDataSetWatch(pdpWatcher, "")
+			pay.NewSettleWatcher(pdpWatcher)
+			pdpv0.NewDataSetDeleteWatcher(pdpWatcher, "")
+			pdpv0.NewTerminateServiceWatcher(pdpWatcher, "")
+			pdpv0.NewPieceDeleteWatcher(pdpWatcher, &cfg.HTTP, iStore, "")
 
-			pdpProveTask := pdpv0.NewProveTask(chainSched, db, must.One(dependencies.EthClient.Val()), dependencies.Chain, es, dependencies.CachedPieceReader, iStore, "")
-			pdpNextProvingPeriodTask := pdpv0.NewNextProvingPeriodTask(db, must.One(dependencies.EthClient.Val()), dependencies.Chain, chainSched, es, "")
-			pdpInitProvingPeriodTask := pdpv0.NewInitProvingPeriodTask(db, must.One(dependencies.EthClient.Val()), dependencies.Chain, chainSched, es, "")
+			pdpProveTask := pdpv0.NewProveTask(db, must.One(dependencies.EthClient.Val()), dependencies.Chain, pdpWatcher, es, dependencies.CachedPieceReader, iStore, "")
+			pdpNextProvingPeriodTask := pdpv0.NewNextProvingPeriodTask(db, must.One(dependencies.EthClient.Val()), dependencies.Chain, pdpWatcher, es, "")
+			pdpInitProvingPeriodTask := pdpv0.NewInitProvingPeriodTask(db, must.One(dependencies.EthClient.Val()), dependencies.Chain, pdpWatcher, es, "")
+
+			pdpWatcher.Run(ctx)
 			pdpNotifTask := pdpv0.NewPDPNotifyTask(ctx, db)
 			pdpPullPieceTask := pdpv0.NewPDPPullPieceTask(ctx, db, sc, cfg.Subsystems.PDPPullPieceMaxTasks)
 
@@ -587,7 +595,7 @@ func StartTasks(ctx context.Context, dependencies *deps.Deps, shutdownChan chan 
 
 	}
 
-	if cfg.Subsystems.EnableWindowPost || hasAnySealingTask || senderEth != nil {
+	if chainSched.HasSubscribers() {
 		go chainSched.Run(ctx)
 	}
 
