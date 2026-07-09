@@ -8,7 +8,7 @@ import (
 
 	"github.com/filecoin-project/go-state-types/builtin"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
 	"github.com/filecoin-project/curio/harmony/taskhelp"
@@ -23,20 +23,18 @@ type ethMsgWaitsGC interface {
 }
 
 type EthMessageWaitsGCTask struct {
-	db  *harmonydb.DB
+	db  harmonyquery.DBInterface
 	eth ethMsgWaitsGC
 }
 
-func NewMessageWaitsEthGCTask(db *harmonydb.DB, eth ethMsgWaitsGC) *EthMessageWaitsGCTask {
+func NewMessageWaitsEthGCTask(db harmonyquery.DBInterface, eth ethMsgWaitsGC) *EthMessageWaitsGCTask {
 	return &EthMessageWaitsGCTask{
 		db:  db,
 		eth: eth,
 	}
 }
 
-func (t *EthMessageWaitsGCTask) Do(taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
-	ctx := context.Background()
-
+func (t *EthMessageWaitsGCTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 	head, err := t.eth.BlockNumber(ctx)
 	if err != nil {
 		return false, xerrors.Errorf("getting latest eth head: %w", err)
@@ -48,7 +46,7 @@ func (t *EthMessageWaitsGCTask) Do(taskID harmonytask.TaskID, stillOwned func() 
 		return true, nil
 	}
 
-	deleted, err := t.db.Exec(ctx, `
+	deleted, err := t.db.ExecI(ctx, `
 		DELETE FROM message_waits_eth
 		WHERE tx_status = 'confirmed'
 		  AND confirmed_block_number IS NOT NULL
