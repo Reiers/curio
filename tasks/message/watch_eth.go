@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,14 @@ type EthClient interface {
 	TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error)
 	TransactionByHash(ctx context.Context, txHash common.Hash) (tx *types.Transaction, isPending bool, err error)
 	HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error)
+	// FilterLogs is used as a fallback to backfill logs on receipts whose
+	// eth_getTransactionReceipt response arrived with an empty Logs slice.
+	// The curio-core embedded Lantern's locally-served receipt path
+	// (lantern#45 Stage 5) omits logs; downstream pdpv0 watchers
+	// (DataSetCreated / DataSetDeleted / add-piece) need them to extract
+	// event params. Backfill via eth_getLogs scoped to the receipt's block
+	// number keeps the on-disk tx_receipt JSON self-sufficient.
+	FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
 }
 
 // TaskEngine is an interface for the parts of harmonytask.TaskEngine we need
@@ -213,6 +222,36 @@ func (mw *MessageWatcherEth) update() {
 			continue
 		}
 
+		// Backfill Logs on receipts arriving with an empty slice. Motivation:
+		// curio-core's embedded Lantern (lantern#45 Stage 5) serves a
+		// locally-resolved eth_getTransactionReceipt for txs it broadcast,
+		// and that shape hardcodes `logs: []` (Lantern V1 doesn't decode
+		// events from Filecoin's message receipts). Downstream pdpv0
+		// watchers parse DataSetCreated / DataSetDeleted / add-piece events
+		// off receipt.Logs and silently stall ("event not found in receipt")
+		// if this slice is empty. We fetch the missing logs via eth_getLogs
+		// scoped to the receipt's block, filter to logs emitted by this tx,
+		// and stitch them onto the in-memory receipt before persisting so
+		// the stored JSON is self-sufficient. Guarded by Status==Successful:
+		// reverted txs don't emit logs, and we don't want to spin extra RPCs
+		// on failed transactions. Non-Lantern deployments already return
+		// populated Logs and the backfill is a no-op (len==0 && bloom==0 =>
+		// FilterLogs returns [] and we skip the reassignment).
+		if receipt.Status == types.ReceiptStatusSuccessful && len(receipt.Logs) == 0 && receipt.BlockNumber != nil && receipt.BlockNumber.Sign() > 0 {
+			if backfilled, ferr := mw.backfillReceiptLogs(ctx, receipt); ferr != nil {
+				log.Warnw("receipt logs backfill failed - persisting empty-logs receipt",
+					"txHash", txHash.Hex(),
+					"blockNumber", receipt.BlockNumber,
+					"error", ferr)
+			} else if len(backfilled) > 0 {
+				log.Infow("backfilled receipt logs from eth_getLogs",
+					"txHash", txHash.Hex(),
+					"blockNumber", receipt.BlockNumber,
+					"count", len(backfilled))
+				receipt.Logs = backfilled
+			}
+		}
+
 		receiptJSON, err := json.Marshal(receipt)
 		if err != nil {
 			errorCount++
@@ -265,6 +304,39 @@ func (mw *MessageWatcherEth) update() {
 		"waitingConfirmations", waitingConfirmations,
 		"errors", errorCount,
 		"total", len(txHashes))
+}
+
+// backfillReceiptLogs fetches logs for the tx via eth_getLogs and returns
+// only those emitted by this transaction, ordered by log index. Uses
+// FromBlock/ToBlock (numeric) rather than BlockHash because Lantern's
+// locally-served receipts synthesise a non-consensus blockHash that the
+// upstream bridge's eth_getLogs won't match. eth_getLogs itself still
+// forwards to the VMBridge in Lantern, so it returns real event data.
+func (mw *MessageWatcherEth) backfillReceiptLogs(ctx context.Context, receipt *types.Receipt) ([]*types.Log, error) {
+	if receipt == nil || receipt.BlockNumber == nil {
+		return nil, nil
+	}
+	blockNum := new(big.Int).Set(receipt.BlockNumber)
+	logs, err := mw.api.FilterLogs(ctx, ethereum.FilterQuery{
+		FromBlock: blockNum,
+		ToBlock:   blockNum,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("eth_getLogs block=%s: %w", blockNum, err)
+	}
+	txHash := receipt.TxHash
+	var matched []*types.Log
+	for i := range logs {
+		if logs[i].TxHash != txHash {
+			continue
+		}
+		log := logs[i]
+		matched = append(matched, &log)
+	}
+	if len(matched) > 1 {
+		sort.Slice(matched, func(i, j int) bool { return matched[i].Index < matched[j].Index })
+	}
+	return matched, nil
 }
 
 func (mw *MessageWatcherEth) Stop(ctx context.Context) error {

@@ -2,7 +2,9 @@ package message
 
 import (
 	"context"
+	"encoding/json"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,11 +49,13 @@ func makeMockTipSet(t *testing.T, height uint64) *ltypes.TipSet {
 // Mocks
 
 type mockEthClient struct {
-	receipts     map[common.Hash]*types.Receipt
-	transactions map[common.Hash]*types.Transaction
-	receiptDelay time.Duration
-	receiptCalls int
-	txCalls      int
+	receipts       map[common.Hash]*types.Receipt
+	transactions   map[common.Hash]*types.Transaction
+	logsByBlockNum map[int64][]types.Log
+	receiptDelay   time.Duration
+	receiptCalls   int
+	txCalls        int
+	filterCalls    int
 }
 
 func (m *mockEthClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
@@ -88,6 +92,14 @@ func (m *mockEthClient) HeaderByNumber(ctx context.Context, number *big.Int) (*t
 	return &types.Header{Number: big.NewInt(100)}, nil
 }
 
+func (m *mockEthClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+	m.filterCalls++
+	if m.logsByBlockNum == nil || q.FromBlock == nil {
+		return nil, nil
+	}
+	return append([]types.Log(nil), m.logsByBlockNum[q.FromBlock.Int64()]...), nil
+}
+
 type mockTaskEngine struct {
 	machineID int64
 }
@@ -97,10 +109,11 @@ func (m *mockTaskEngine) ResourcesAvailable() resources.Resources {
 }
 
 type mockEthTxManager struct {
-	txData      map[string]*txRecord
-	assignCalls int
-	getCalls    int
-	updateCalls int
+	txData          map[string]*txRecord
+	lastReceiptJSON map[string][]byte
+	assignCalls     int
+	getCalls        int
+	updateCalls     int
 }
 
 type txRecord struct {
@@ -112,7 +125,8 @@ type txRecord struct {
 
 func newMockEthTxManager() *mockEthTxManager {
 	return &mockEthTxManager{
-		txData: make(map[string]*txRecord),
+		txData:          make(map[string]*txRecord),
+		lastReceiptJSON: make(map[string][]byte),
 	}
 }
 
@@ -141,6 +155,10 @@ func (m *mockEthTxManager) GetPendingForMachine(ctx context.Context, machineID i
 
 func (m *mockEthTxManager) UpdateToConfirmed(ctx context.Context, signedTxHash string, blockNumber int64, confirmedTxHash string, txData []byte, receipt []byte, success bool) error {
 	m.updateCalls++
+	if m.lastReceiptJSON == nil {
+		m.lastReceiptJSON = make(map[string][]byte)
+	}
+	m.lastReceiptJSON[strings.ToLower(signedTxHash)] = append([]byte(nil), receipt...)
 	if data, ok := m.txData[signedTxHash]; ok {
 		data.Status = "confirmed"
 		data.MachineID = nil
@@ -264,4 +282,102 @@ func TestMessageWatcherEthTimeout(t *testing.T) {
 	require.Equal(t, "pending", mockTxMgr.txData[txHash.Hex()].Status)
 	// Verify the API was actually called (not bypassed)
 	require.Equal(t, 1, mockClient.receiptCalls)
+}
+
+// TestMessageWatcherEthBackfillsMissingLogs guards the fix for curio-core
+// #82 (Lantern-served receipts arrive with empty logs). When the receipt
+// from mw.api has Status==Successful and an empty Logs slice, the
+// watcher must fetch logs via eth_getLogs scoped to the block, filter to
+// the tx, and persist a receipt with logs populated so downstream
+// pdpv0 watchers (DataSetCreated etc.) can parse the event.
+func TestMessageWatcherEthBackfillsMissingLogs(t *testing.T) {
+	machineID := int64(1)
+	mockTxMgr := newMockEthTxManager()
+	mockTaskEngine := &mockTaskEngine{machineID: machineID}
+	mockClient := &mockEthClient{
+		receipts:       make(map[common.Hash]*types.Receipt),
+		transactions:   make(map[common.Hash]*types.Transaction),
+		logsByBlockNum: make(map[int64][]types.Log),
+	}
+
+	txHash := common.HexToHash("0xcafe000000000000000000000000000000000000000000000000000000000001")
+	otherTxHash := common.HexToHash("0xcafe000000000000000000000000000000000000000000000000000000000099")
+
+	mockTxMgr.txData[txHash.Hex()] = &txRecord{Status: "pending"}
+
+	// Simulate Lantern-shaped receipt: successful, blockNumber set, logs empty.
+	mockClient.receipts[txHash] = &types.Receipt{
+		Status:      types.ReceiptStatusSuccessful,
+		BlockNumber: big.NewInt(85),
+		TxHash:      txHash,
+	}
+	mockClient.transactions[txHash] = types.NewTransaction(0, common.Address{}, big.NewInt(1), 21000, big.NewInt(1), nil)
+
+	// Block 85 has two logs from our tx (out of order) and one from another tx.
+	mockClient.logsByBlockNum[85] = []types.Log{
+		{TxHash: txHash, Index: 4, Topics: []common.Hash{{0xaa}}},
+		{TxHash: otherTxHash, Index: 3, Topics: []common.Hash{{0xbb}}},
+		{TxHash: txHash, Index: 2, Topics: []common.Hash{{0xcc}}},
+	}
+
+	mw := &MessageWatcherEth{
+		txMgr:          mockTxMgr,
+		ht:             mockTaskEngine,
+		api:            mockClient,
+		updateCh:       make(chan struct{}, 1),
+		ethCallTimeout: time.Second,
+	}
+	mw.bestBlockNumber.Store(big.NewInt(100))
+	mw.update()
+
+	require.Equal(t, "confirmed", mockTxMgr.txData[txHash.Hex()].Status)
+	require.Equal(t, 1, mockClient.filterCalls, "expected exactly one eth_getLogs backfill call")
+
+	// The receipt persisted through UpdateToConfirmed should carry the two
+	// tx-owned logs, ordered by log index.
+	stored := mockTxMgr.lastReceiptJSON[strings.ToLower(txHash.Hex())]
+	require.NotNil(t, stored, "expected receipt JSON to be persisted")
+	var parsed types.Receipt
+	require.NoError(t, json.Unmarshal(stored, &parsed))
+	require.Len(t, parsed.Logs, 2)
+	require.Equal(t, uint(2), parsed.Logs[0].Index)
+	require.Equal(t, uint(4), parsed.Logs[1].Index)
+	require.Equal(t, txHash, parsed.Logs[0].TxHash)
+	require.Equal(t, txHash, parsed.Logs[1].TxHash)
+}
+
+// TestMessageWatcherEthNoBackfillOnRevert guards that failed txs do not
+// trigger extra eth_getLogs calls (they can't emit logs anyway).
+func TestMessageWatcherEthNoBackfillOnRevert(t *testing.T) {
+	machineID := int64(1)
+	mockTxMgr := newMockEthTxManager()
+	mockTaskEngine := &mockTaskEngine{machineID: machineID}
+	mockClient := &mockEthClient{
+		receipts:       make(map[common.Hash]*types.Receipt),
+		transactions:   make(map[common.Hash]*types.Transaction),
+		logsByBlockNum: make(map[int64][]types.Log),
+	}
+
+	txHash := common.HexToHash("0xdead000000000000000000000000000000000000000000000000000000000001")
+	mockTxMgr.txData[txHash.Hex()] = &txRecord{Status: "pending"}
+
+	mockClient.receipts[txHash] = &types.Receipt{
+		Status:      types.ReceiptStatusFailed,
+		BlockNumber: big.NewInt(85),
+		TxHash:      txHash,
+	}
+	mockClient.transactions[txHash] = types.NewTransaction(0, common.Address{}, big.NewInt(1), 21000, big.NewInt(1), nil)
+
+	mw := &MessageWatcherEth{
+		txMgr:          mockTxMgr,
+		ht:             mockTaskEngine,
+		api:            mockClient,
+		updateCh:       make(chan struct{}, 1),
+		ethCallTimeout: time.Second,
+	}
+	mw.bestBlockNumber.Store(big.NewInt(100))
+	mw.update()
+
+	require.Equal(t, "confirmed", mockTxMgr.txData[txHash.Hex()].Status)
+	require.Equal(t, 0, mockClient.filterCalls, "reverted receipts should not trigger a logs backfill")
 }
