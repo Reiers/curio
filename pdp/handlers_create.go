@@ -121,7 +121,7 @@ func (p *PDPService) handleCreateDataSetAndAddPieces(w http.ResponseWriter, r *h
 	// PDPVerifier (v3.4.0+ REQUIRES msg.value >= FIL_CLEANUP_DEPOSIT for any
 	// path that creates a new dataset; excess is refunded). Address stays
 	// runtime-network-aware via ContractAddressesFor(p.Network()).
-	cleanupDeposit, err := contract.FilCleanupDeposit(workCtx, p.ethClient)
+	cleanupDeposit, err := contract.FilCleanupDepositFor(workCtx, p.ethClient, p.Network())
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Failed to read FIL cleanup deposit: "+err.Error(), err)
 		return
@@ -295,7 +295,7 @@ func (p *PDPService) handleCreateDataSet(w http.ResponseWriter, r *http.Request)
 	// Prepare the transaction (nonce will be set to 0, SenderETH will assign it).
 	// msg.value = FIL_CLEANUP_DEPOSIT, read dynamically (v3.4.0+); address stays
 	// runtime-network-aware via ContractAddressesFor(p.Network()).
-	cleanupDeposit, err := contract.FilCleanupDeposit(workCtx, p.ethClient)
+	cleanupDeposit, err := contract.FilCleanupDepositFor(workCtx, p.ethClient, p.Network())
 	if err != nil {
 		httpServerError(w, http.StatusInternalServerError, "Failed to read FIL cleanup deposit: "+err.Error(), err)
 		return

@@ -39,8 +39,17 @@ func EthCallOpts(ctx context.Context) *bind.CallOpts {
 // FilCleanupDeposit returns the FIL cleanup deposit required when creating a data set.
 // deleteDataSet and cleanupPieces are nonpayable; the deposit is refunded to whoever
 // finalizes on-chain cleanup via _finalizeCleanup.
+//
+// Deprecated: uses build-tag-selected contract addresses which resolve to the
+// zero address when no build tag is set (e.g. curio-core). Use
+// FilCleanupDepositFor instead.
 func FilCleanupDeposit(ctx context.Context, ethClient ethchain.EthClient) (*big.Int, error) {
-	pdpVerifier, err := NewPDPVerifier(ContractAddresses().PDPVerifier, ethClient)
+	return FilCleanupDepositFor(ctx, ethClient, NetworkFromBuildType())
+}
+
+// FilCleanupDepositFor is the runtime-network-aware variant of FilCleanupDeposit.
+func FilCleanupDepositFor(ctx context.Context, ethClient ethchain.EthClient, network Network) (*big.Int, error) {
+	pdpVerifier, err := NewPDPVerifier(ContractAddressesFor(network).PDPVerifier, ethClient)
 	if err != nil {
 		return nil, xerrors.Errorf("instantiating PDPVerifier: %w", err)
 	}
