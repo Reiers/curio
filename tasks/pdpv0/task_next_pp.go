@@ -3,16 +3,12 @@ package pdpv0
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 	"time"
 
-	ethereum "github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/samber/lo"
 	"github.com/yugabyte/pgx/v5"
@@ -140,109 +136,6 @@ func resetDatasetToInitPP(ctx context.Context, db harmonyquery.DBInterface, data
 	return nil
 }
 
-// invalidChallengeEpochSelector is the 4-byte selector of
-// InvalidChallengeEpoch(uint256 setId, uint256 min, uint256 max, uint256 provided).
-var invalidChallengeEpochSelector = [4]byte{0x25, 0xa0, 0xc7, 0xf7}
-
-// clampNextProveAt simulates nextProvingPeriod(dataSetId, candidate) via eth_call.
-// If the contract accepts it, candidate is returned unchanged. If the contract
-// reverts with InvalidChallengeEpoch, the reported [min,max] window is parsed and
-// candidate is clamped into range (preferring the midpoint when fully out of range
-// to maximize the margin against head drift before the tx lands). Any other revert
-// or decode failure returns an error so the caller can fall back to the raw value.
-func (n *NextProvingPeriodTask) clampNextProveAt(ctx context.Context, abiData *abi.ABI, pdpVerifierAddress common.Address, dataSetId int64, candidate *big.Int) (*big.Int, error) {
-	pdpVerifier, err := contract.NewPDPVerifier(pdpVerifierAddress, n.ethClient)
-	if err != nil {
-		return nil, xerrors.Errorf("instantiate PDPVerifier for clamp sim: %w", err)
-	}
-	fromAddr, _, err := pdpVerifier.GetDataSetStorageProvider(contract.EthCallOpts(ctx), big.NewInt(dataSetId))
-	if err != nil {
-		return nil, xerrors.Errorf("get storage provider for clamp sim: %w", err)
-	}
-
-	call := func(epoch *big.Int) error {
-		data, perr := abiData.Pack("nextProvingPeriod", big.NewInt(dataSetId), epoch, []byte{})
-		if perr != nil {
-			return xerrors.Errorf("pack sim: %w", perr)
-		}
-		_, cerr := n.ethClient.CallContract(ctx, ethereum.CallMsg{
-			From: fromAddr,
-			To:   &pdpVerifierAddress,
-			Data: data,
-		}, nil)
-		return cerr
-	}
-
-	err = call(candidate)
-	if err == nil {
-		return candidate, nil // contract accepts the view value as-is
-	}
-
-	min, max, ok := parseInvalidChallengeEpoch(err)
-	if !ok {
-		return nil, xerrors.Errorf("nextProvingPeriod sim reverted (non-window): %w", err)
-	}
-	if min == nil || max == nil || min.Cmp(max) > 0 {
-		return nil, xerrors.Errorf("nextProvingPeriod reported nonsensical window [%v,%v]", min, max)
-	}
-
-	// Clamp: prefer midpoint of [min,max] for the widest margin against head drift.
-	mid := new(big.Int).Add(min, max)
-	mid.Rsh(mid, 1)
-	if verr := call(mid); verr != nil {
-		return nil, xerrors.Errorf("clamped midpoint %v still rejected: %w", mid, verr)
-	}
-	return mid, nil
-}
-
-// parseInvalidChallengeEpoch extracts (min,max) from an InvalidChallengeEpoch
-// revert carried in err. Returns ok=false if the error is not that custom error.
-func parseInvalidChallengeEpoch(err error) (min, max *big.Int, ok bool) {
-	if err == nil {
-		return nil, nil, false
-	}
-	raw := extractRevertHex(err.Error())
-	if len(raw) < 4+32*4 {
-		return nil, nil, false
-	}
-	if raw[0] != invalidChallengeEpochSelector[0] || raw[1] != invalidChallengeEpochSelector[1] ||
-		raw[2] != invalidChallengeEpochSelector[2] || raw[3] != invalidChallengeEpochSelector[3] {
-		return nil, nil, false
-	}
-	// layout: selector | setId(32) | min(32) | max(32) | provided(32)
-	min = new(big.Int).SetBytes(raw[4+32 : 4+64])
-	max = new(big.Int).SetBytes(raw[4+64 : 4+96])
-	return min, max, true
-}
-
-// extractRevertHex pulls the trailing 0x... revert payload out of an error string.
-func extractRevertHex(s string) []byte {
-	idx := strings.LastIndex(s, "0x")
-	if idx < 0 {
-		return nil
-	}
-	hexPart := s[idx+2:]
-	// trim any trailing non-hex characters
-	end := 0
-	for end < len(hexPart) {
-		c := hexPart[end]
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
-			end++
-			continue
-		}
-		break
-	}
-	hexPart = hexPart[:end]
-	if len(hexPart)%2 == 1 {
-		hexPart = hexPart[:len(hexPart)-1]
-	}
-	b, derr := hex.DecodeString(hexPart)
-	if derr != nil {
-		return nil
-	}
-	return b
-}
-
 func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskID, stillOwned func() bool) (done bool, err error) {
 	// Select the data set where challenge_request_task_id = taskID
 	var dataSetId int64
@@ -311,23 +204,6 @@ func (n *NextProvingPeriodTask) Do(ctx context.Context, taskID harmonytask.TaskI
 	abiData, err := contract.PDPVerifierMetaData.GetAbi()
 	if err != nil {
 		return false, xerrors.Errorf("failed to get PDPVerifier ABI: %w", err)
-	}
-
-	// curio-core: the NextPDPChallengeWindowStart view can drift out of the
-	// window nextProvingPeriod will actually accept when the dataset's on-chain
-	// proving state is briefly inconsistent (e.g. lastProvenEpoch momentarily
-	// ahead of nextChallengeEpoch after a missed/recovered window). Submitting
-	// the drifted value reverts with InvalidChallengeEpoch(setId,min,max,provided)
-	// and wedges the dataset in a retry loop that never re-arms proving.
-	// Validate the value against the contract's accept-window first; if it is
-	// out of range, clamp into [min,max] using the bounds the contract reports.
-	if clamped, cerr := n.clampNextProveAt(ctx, abiData, pdpVerifierAddress, dataSetId, next_prove_at); cerr != nil {
-		log.Warnw("nextProvingPeriod window validation failed; sending unclamped value",
-			"dataSetId", dataSetId, "next_prove_at", next_prove_at, "err", cerr)
-	} else if clamped != nil && clamped.Cmp(next_prove_at) != 0 {
-		log.Warnw("clamped next_prove_at into contract accept-window",
-			"dataSetId", dataSetId, "view_value", next_prove_at, "clamped", clamped)
-		next_prove_at = clamped
 	}
 
 	data, err := abiData.Pack("nextProvingPeriod", big.NewInt(dataSetId), next_prove_at, []byte{})
