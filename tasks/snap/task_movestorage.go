@@ -12,6 +12,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -148,7 +149,7 @@ func (m *MoveStorageTask) TypeDetails() harmonytask.TaskTypeDetails {
 func (m *MoveStorageTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var tasks []struct {
@@ -156,7 +157,7 @@ func (m *MoveStorageTask) schedule(ctx context.Context, taskFunc harmonytask.Add
 				SectorNumber int64 `db:"sector_number"`
 			}
 
-			err := tx.Select(&tasks, `SELECT sp_id, sector_number FROM sectors_snap_pipeline WHERE after_encode = TRUE AND after_move_storage = FALSE AND task_id_move_storage IS NULL ORDER BY start_time ASC LIMIT 1`)
+			err := tx.SelectI(&tasks, `SELECT sp_id, sector_number FROM sectors_snap_pipeline WHERE after_encode = TRUE AND after_move_storage = FALSE AND task_id_move_storage IS NULL ORDER BY start_time ASC LIMIT 1`)
 			if err != nil {
 				return false, xerrors.Errorf("getting tasks: %w", err)
 			}
@@ -167,7 +168,7 @@ func (m *MoveStorageTask) schedule(ctx context.Context, taskFunc harmonytask.Add
 
 			t := tasks[0]
 
-			_, err = tx.Exec(`UPDATE sectors_snap_pipeline SET task_id_move_storage = $1 WHERE sp_id = $2 AND sector_number = $3 AND after_encode = TRUE AND after_move_storage = FALSE AND task_id_move_storage IS NULL`, id, t.SpID, t.SectorNumber)
+			_, err = tx.ExecI(`UPDATE sectors_snap_pipeline SET task_id_move_storage = $1 WHERE sp_id = $2 AND sector_number = $3 AND after_encode = TRUE AND after_move_storage = FALSE AND task_id_move_storage IS NULL`, id, t.SpID, t.SectorNumber)
 			if err != nil {
 				return false, xerrors.Errorf("updating task id: %w", err)
 			}

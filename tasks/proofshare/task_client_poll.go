@@ -15,6 +15,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/crypto"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -90,12 +91,12 @@ func (t *TaskClientPoll) Adder(atf harmonytask.AddTaskFunc) {
 			}
 			more = false
 
-			atf(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			atf(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// where request_sent is true and task_id_poll is null and done is false
 
 				var spID, sectorNum int64
 				var requestType string
-				err := tx.QueryRow(`
+				err := tx.QueryRowI(`
 					SELECT sp_id, sector_num, request_type
 					FROM proofshare_client_requests
 					WHERE request_sent = TRUE AND request_uploaded = TRUE AND task_id_poll IS NULL AND done = FALSE
@@ -106,7 +107,7 @@ func (t *TaskClientPoll) Adder(atf harmonytask.AddTaskFunc) {
 				}
 
 				// update proofshare_client_requests
-				n, err := tx.Exec(`
+				n, err := tx.ExecI(`
 					UPDATE proofshare_client_requests
 					SET task_id_poll = $4
 					WHERE sp_id = $1 AND sector_num = $2 AND request_type = $3 AND request_sent = TRUE AND request_uploaded = TRUE AND task_id_poll IS NULL AND done = FALSE

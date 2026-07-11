@@ -25,6 +25,7 @@ import (
 	miner12 "github.com/filecoin-project/go-state-types/builtin/v12/miner"
 	"github.com/filecoin-project/go-state-types/crypto"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -581,11 +582,11 @@ func (s *SupraSeal) schedule(taskFunc harmonytask.AddTaskFunc) error {
 		return nil
 	}
 
-	taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+	taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 		// claim [sectors] pipeline entries
 
 		var sectors []sectorClaim
-		err := tx.Select(&sectors, `SELECT sp_id, sector_number, task_id_sdr FROM sectors_sdr_pipeline
+		err := tx.SelectI(&sectors, `SELECT sp_id, sector_number, task_id_sdr FROM sectors_sdr_pipeline
                                          LEFT JOIN harmony_task ht on sectors_sdr_pipeline.task_id_sdr = ht.id
                                          WHERE after_sdr = FALSE AND (task_id_sdr IS NULL OR (ht.owner_id IS NULL AND ht.name = 'SDR')) LIMIT $1`, s.sectors)
 		if err != nil {
@@ -611,14 +612,14 @@ func (s *SupraSeal) schedule(taskFunc harmonytask.AddTaskFunc) error {
 
 		// assign to pipeline entries, set task_id_sdr, task_id_tree_r, task_id_tree_c
 		for _, t := range sectors {
-			_, err := tx.Exec(`UPDATE sectors_sdr_pipeline SET task_id_sdr = $1, task_id_tree_r = $1, task_id_tree_c = $1, task_id_tree_d = $1 WHERE sp_id = $2 AND sector_number = $3`, id, t.SpID, t.SectorNumber)
+			_, err := tx.ExecI(`UPDATE sectors_sdr_pipeline SET task_id_sdr = $1, task_id_tree_r = $1, task_id_tree_c = $1, task_id_tree_d = $1 WHERE sp_id = $2 AND sector_number = $3`, id, t.SpID, t.SectorNumber)
 			if err != nil {
 				return false, xerrors.Errorf("updating task id: %w", err)
 			}
 
 			if t.TaskIDSDR.Valid {
 				// sdr task exists, remove it from the task engine
-				_, err := tx.Exec(`DELETE FROM harmony_task WHERE id = $1`, t.TaskIDSDR.Int64)
+				_, err := tx.ExecI(`DELETE FROM harmony_task WHERE id = $1`, t.TaskIDSDR.Int64)
 				if err != nil {
 					return false, xerrors.Errorf("deleting old task: %w", err)
 				}
@@ -631,7 +632,7 @@ func (s *SupraSeal) schedule(taskFunc harmonytask.AddTaskFunc) error {
 	return nil
 }
 
-func (s *SupraSeal) claimsFromCCScheduler(tx *harmonydb.Tx, toSeal int64) ([]sectorClaim, error) {
+func (s *SupraSeal) claimsFromCCScheduler(tx harmonyquery.TxInterface, toSeal int64) ([]sectorClaim, error) {
 	var enabledSchedules []struct {
 		SpID         int64 `db:"sp_id"`
 		ToSeal       int64 `db:"to_seal"`
@@ -639,7 +640,7 @@ func (s *SupraSeal) claimsFromCCScheduler(tx *harmonydb.Tx, toSeal int64) ([]sec
 		DurationDays int64 `db:"duration_days"`
 	}
 
-	err := tx.Select(&enabledSchedules, `SELECT sp_id, to_seal, weight, duration_days FROM sectors_cc_scheduler WHERE enabled = TRUE AND weight > 0 ORDER BY weight DESC`)
+	err := tx.SelectI(&enabledSchedules, `SELECT sp_id, to_seal, weight, duration_days FROM sectors_cc_scheduler WHERE enabled = TRUE AND weight > 0 ORDER BY weight DESC`)
 	if err != nil {
 		return nil, xerrors.Errorf("getting enabled schedules: %w", err)
 	}
@@ -688,7 +689,11 @@ func (s *SupraSeal) claimsFromCCScheduler(tx *harmonydb.Tx, toSeal int64) ([]sec
 			return nil, xerrors.Errorf("getting miner address for %d: %w", schedule.SpID, err)
 		}
 
-		sectorNumbers, err := seal.AllocateSectorNumbers(context.Background(), s.api, tx, maddr, int(sectorsForSP))
+		concreteTx, ok := tx.(*harmonydb.Tx)
+		if !ok {
+			return nil, xerrors.Errorf("claimsFromCCScheduler: expected *harmonydb.Tx, got %T", tx)
+		}
+		sectorNumbers, err := seal.AllocateSectorNumbers(context.Background(), s.api, concreteTx, maddr, int(sectorsForSP))
 		if err != nil {
 			return nil, xerrors.Errorf("allocating sector numbers for %d: %w", schedule.SpID, err)
 		}
@@ -711,7 +716,7 @@ func (s *SupraSeal) claimsFromCCScheduler(tx *harmonydb.Tx, toSeal int64) ([]sec
 			}
 
 			// Insert new sector into sectors_sdr_pipeline
-			_, err := tx.Exec(`INSERT INTO sectors_sdr_pipeline (sp_id, sector_number, reg_seal_proof, user_sector_duration_epochs) 
+			_, err := tx.ExecI(`INSERT INTO sectors_sdr_pipeline (sp_id, sector_number, reg_seal_proof, user_sector_duration_epochs) 
 				VALUES ($1, $2, $3, $4)`,
 				schedule.SpID, sectorNum, s.spt, userDuration)
 			if err != nil {
@@ -720,7 +725,7 @@ func (s *SupraSeal) claimsFromCCScheduler(tx *harmonydb.Tx, toSeal int64) ([]sec
 		}
 
 		// Update the to_seal count for this SP
-		_, err = tx.Exec(`UPDATE sectors_cc_scheduler SET to_seal = to_seal - $1 WHERE sp_id = $2`, sectorsForSP, schedule.SpID)
+		_, err = tx.ExecI(`UPDATE sectors_cc_scheduler SET to_seal = to_seal - $1 WHERE sp_id = $2`, sectorsForSP, schedule.SpID)
 		if err != nil {
 			return nil, xerrors.Errorf("updating to_seal for SP %d: %w", schedule.SpID, err)
 		}

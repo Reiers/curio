@@ -10,6 +10,7 @@ import (
 
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -154,14 +155,14 @@ func (c *ScrubCommRTask) Adder(taskFunc harmonytask.AddTaskFunc) {
 }
 
 func (c *ScrubCommRTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
-	taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+	taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 		var checks []struct {
 			CheckID      int64 `db:"check_id"`
 			SpID         int64 `db:"sp_id"`
 			SectorNumber int64 `db:"sector_number"`
 		}
 
-		err := tx.Select(&checks, `
+		err := tx.SelectI(&checks, `
 			SELECT check_id, sp_id, sector_number
 			FROM scrub_commr_check
 			WHERE task_id IS NULL AND ok IS NULL LIMIT 20
@@ -177,7 +178,7 @@ func (c *ScrubCommRTask) schedule(ctx context.Context, taskFunc harmonytask.AddT
 		// pick at random in case there are a bunch of schedules across the cluster
 		check := checks[rand.N(len(checks))]
 
-		_, err = tx.Exec(`
+		_, err = tx.ExecI(`
 			UPDATE scrub_commr_check
 			SET task_id = $1
 			WHERE check_id = $2 AND task_id IS NULL

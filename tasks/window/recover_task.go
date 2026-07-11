@@ -12,6 +12,7 @@ import (
 	"github.com/filecoin-project/go-state-types/dline"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -303,7 +304,7 @@ func (w *WdPostRecoverDeclareTask) processHeadChange(ctx context.Context, revert
 				PartitionIndex:     uint64(pidx),
 			}
 
-			tf(func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) {
+			tf(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) {
 				return w.addTaskToDB(id, tid, tx)
 			})
 		}
@@ -312,8 +313,8 @@ func (w *WdPostRecoverDeclareTask) processHeadChange(ctx context.Context, revert
 	return nil
 }
 
-func (w *WdPostRecoverDeclareTask) addTaskToDB(taskId harmonytask.TaskID, taskIdent wdTaskIdentity, tx *harmonydb.Tx) (bool, error) {
-	_, err := tx.Exec(
+func (w *WdPostRecoverDeclareTask) addTaskToDB(taskId harmonytask.TaskID, taskIdent wdTaskIdentity, tx harmonyquery.TxInterface) (bool, error) {
+	_, err := tx.ExecI(
 		`INSERT INTO wdpost_recovery_tasks (
                          task_id,
                           sp_id,

@@ -889,7 +889,7 @@ func insertPDPPipeline(ctx context.Context, tx harmonyquery.TxInterface, deal *D
 				dealID, deal.Client, piece.PieceCID.String(), *pdp.DataSetID, pdp.ExtraData,
 				aggregation, i, retv.Indexing, retv.AnnouncePiece, retv.AnnouncePayload)
 			if pBatch.Len() > pBatchSize {
-				res, err := tx.SendBatch(ctx, pBatch)
+				res, err := tx.(*harmonyquery.Tx).SendBatch(ctx, pBatch)
 				if err != nil {
 					return xerrors.Errorf("failed to send batch: %w", err)
 				}
@@ -900,7 +900,7 @@ func insertPDPPipeline(ctx context.Context, tx harmonyquery.TxInterface, deal *D
 			}
 		}
 		if pBatch.Len() > 0 {
-			res, err := tx.SendBatch(ctx, pBatch)
+			res, err := tx.(*harmonyquery.Tx).SendBatch(ctx, pBatch)
 			if err != nil {
 				return xerrors.Errorf("failed to send batch: %w", err)
 			}

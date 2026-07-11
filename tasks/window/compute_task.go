@@ -20,6 +20,7 @@ import (
 	"github.com/filecoin-project/go-state-types/network"
 
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -522,7 +523,7 @@ func (t *WdPostTask) processHeadChange(ctx context.Context, revert, apply *types
 				return xerrors.Errorf("no task func")
 			}
 
-			tf(func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) {
+			tf(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) {
 				return t.addTaskToDB(id, tid, tx)
 			})
 		}
@@ -531,9 +532,9 @@ func (t *WdPostTask) processHeadChange(ctx context.Context, revert, apply *types
 	return nil
 }
 
-func (t *WdPostTask) addTaskToDB(taskId harmonytask.TaskID, taskIdent wdTaskIdentity, tx *harmonydb.Tx) (bool, error) {
+func (t *WdPostTask) addTaskToDB(taskId harmonytask.TaskID, taskIdent wdTaskIdentity, tx harmonyquery.TxInterface) (bool, error) {
 
-	_, err := tx.Exec(
+	_, err := tx.ExecI(
 		`INSERT INTO wdpost_partition_tasks (
                          task_id,
                           sp_id,

@@ -6,6 +6,7 @@ import (
 
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -84,9 +85,9 @@ func (c *CleanupPieceTask) pollCleanupTasks(ctx context.Context) {
 		for _, pieceID := range pieceIDs {
 
 			// create a task for each piece
-			c.TF.Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+			c.TF.Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 				// update
-				n, err := tx.Exec(`UPDATE parked_pieces pp
+				n, err := tx.ExecI(`UPDATE parked_pieces pp
 						SET cleanup_task_id = $1
 						WHERE pp.cleanup_task_id IS NULL
 						  AND pp.id = $2

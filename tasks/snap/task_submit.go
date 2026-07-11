@@ -29,6 +29,7 @@ import (
 
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -562,7 +563,7 @@ func (s *SubmitTask) schedule(ctx context.Context, addTaskFunc harmonytask.AddTa
 	var done bool
 
 	for !done {
-		addTaskFunc(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		addTaskFunc(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			//----------------------------------
 			// 1) Gather candidate tasks to schedule
 			//----------------------------------
@@ -574,7 +575,7 @@ func (s *SubmitTask) schedule(ctx context.Context, addTaskFunc harmonytask.AddTa
 				StartEpoch    int64        `db:"smallest_direct_start_epoch"`
 			}
 
-			err := tx.Select(&rawRows, `
+			err := tx.SelectI(&rawRows, `
 				SELECT 
 					ssp.sp_id,
 					ssp.sector_number,
@@ -706,7 +707,7 @@ func (s *SubmitTask) schedule(ctx context.Context, addTaskFunc harmonytask.AddTa
 					//----------------------------------
 					var scheduled int
 					for _, row := range toSchedule {
-						n, err := tx.Exec(`
+						n, err := tx.ExecI(`
 							UPDATE sectors_snap_pipeline
 							SET task_id_submit = $1,
 							    submit_after = NULL

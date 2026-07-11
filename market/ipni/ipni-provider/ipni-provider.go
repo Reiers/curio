@@ -202,34 +202,26 @@ func (p *Provider) insertProvider(priv []byte, peerID string, sp int64) error {
 }
 
 func (p *Provider) refreshProviders(ctx context.Context) error {
-	rows, err := p.db.QueryI(ctx, `SELECT priv_key, peer_id, sp_id FROM ipni_peerid`)
-	if err != nil {
+	var rows []struct {
+		PrivKey []byte `db:"priv_key"`
+		PeerID  string `db:"peer_id"`
+		SpID    int64  `db:"sp_id"`
+	}
+	if err := p.db.SelectI(ctx, &rows, `SELECT priv_key, peer_id, sp_id FROM ipni_peerid`); err != nil {
 		return xerrors.Errorf("failed to refresh ipni peers from DB: %w", err)
 	}
-	defer rows.Close()
 
 	p.mu.RLock()
 	peers := slices.Sorted(maps.Keys(p.providerInfos))
 	p.mu.RUnlock()
 
-	for rows.Next() && rows.Err() == nil {
-		var priv []byte
-		var peerID string
-		var sp int64
-		if err := rows.Scan(&priv, &peerID, &sp); err != nil {
-			return xerrors.Errorf("failed to scan refreshed ipni peer row: %w", err)
-		}
-
-		if lo.Contains(peers, strings.TrimSpace(peerID)) {
+	for _, row := range rows {
+		if lo.Contains(peers, strings.TrimSpace(row.PeerID)) {
 			continue
 		}
-		if err := p.insertProvider(priv, peerID, sp); err != nil {
+		if err := p.insertProvider(row.PrivKey, row.PeerID, row.SpID); err != nil {
 			return err
 		}
-	}
-
-	if rows.Err() != nil {
-		return rows.Err()
 	}
 
 	return nil

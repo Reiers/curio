@@ -27,6 +27,7 @@ import (
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps"
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -735,11 +736,11 @@ func (t *WinPostTask) mineBasic(ctx context.Context) {
 				continue
 			}
 
-			taskFn(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			taskFn(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// First we check if the mining base includes blocks we may have mined previously to avoid getting slashed
 				// select mining_tasks where epoch==base_epoch if win=true to maybe get base block cid which has to be included in our tipset
 				var baseBlockCids []string
-				err := tx.Select(&baseBlockCids, `SELECT mined_cid FROM mining_tasks WHERE epoch = $1 AND sp_id = $2 AND won = true`, baseEpoch, spID)
+				err := tx.SelectI(&baseBlockCids, `SELECT mined_cid FROM mining_tasks WHERE epoch = $1 AND sp_id = $2 AND won = true`, baseEpoch, spID)
 				if err != nil {
 					return false, xerrors.Errorf("querying mining_tasks: %w", err)
 				}
@@ -763,13 +764,13 @@ func (t *WinPostTask) mineBasic(ctx context.Context) {
 					}
 				}
 
-				_, err = tx.Exec(`INSERT INTO mining_tasks (task_id, sp_id, epoch, base_compute_time) VALUES ($1, $2, $3, $4)`, id, spID, workBase.epoch(), workBase.ComputeTime.UTC())
+				_, err = tx.ExecI(`INSERT INTO mining_tasks (task_id, sp_id, epoch, base_compute_time) VALUES ($1, $2, $3, $4)`, id, spID, workBase.epoch(), workBase.ComputeTime.UTC())
 				if err != nil {
 					return false, xerrors.Errorf("inserting mining_tasks: %w", err)
 				}
 
 				for _, c := range workBase.TipSet.Cids() {
-					_, err = tx.Exec(`INSERT INTO mining_base_block (task_id, sp_id, block_cid) VALUES ($1, $2, $3)`, id, spID, c)
+					_, err = tx.ExecI(`INSERT INTO mining_base_block (task_id, sp_id, block_cid) VALUES ($1, $2, $3)`, id, spID, c)
 					if err != nil {
 						return false, xerrors.Errorf("inserting mining base blocks: %w", err)
 					}

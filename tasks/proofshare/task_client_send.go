@@ -14,6 +14,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/big"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -41,9 +42,9 @@ func (t *TaskClientSend) Adder(atf harmonytask.AddTaskFunc) {
 	// being brought into the system
 	go func() {
 		for range time.NewTicker(3 * time.Minute).C {
-			atf(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			atf(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// If there is a sender entry with null task_id, set it to the current task id
-				n, err := tx.Exec("UPDATE proofshare_client_sender SET task_id = $1, updated_at = current_timestamp WHERE task_id IS NULL", id)
+				n, err := tx.ExecI("UPDATE proofshare_client_sender SET task_id = $1, updated_at = current_timestamp WHERE task_id IS NULL", id)
 				if err != nil {
 					return false, err
 				}

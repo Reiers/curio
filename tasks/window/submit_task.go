@@ -13,6 +13,7 @@ import (
 	"github.com/filecoin-project/go-state-types/builtin/v9/miner"
 	"github.com/filecoin-project/go-state-types/crypto"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -236,9 +237,9 @@ func (w *WdPostSubmitTask) processHeadChange(ctx context.Context, revert, apply 
 			return xerrors.Errorf("scan submittable posts: %w", err)
 		}
 
-		tf(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+		tf(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 			// update in transaction iff submit_task_id is still null
-			res, err := tx.Exec(`UPDATE wdpost_proofs SET submit_task_id = $1 WHERE sp_id = $2 AND proving_period_start = $3 AND deadline = $4 AND partition = $5 AND submit_task_id IS NULL`, id, spID, pps, deadline, partition)
+			res, err := tx.ExecI(`UPDATE wdpost_proofs SET submit_task_id = $1 WHERE sp_id = $2 AND proving_period_start = $3 AND deadline = $4 AND partition = $5 AND submit_task_id IS NULL`, id, spID, pps, deadline, partition)
 			if err != nil {
 				return false, xerrors.Errorf("query ready proof: %w", err)
 			}

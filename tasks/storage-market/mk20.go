@@ -26,6 +26,7 @@ import (
 	verifreg13 "github.com/filecoin-project/go-state-types/builtin/v13/verifreg"
 	"github.com/filecoin-project/go-state-types/builtin/v9/verifreg"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/lib/commcidv2"
@@ -810,9 +811,9 @@ func (d *CurioStorageDealMarket) createCommPMk20Piece(ctx context.Context, piece
 		}
 
 		if d.adders[pollerCommP].IsSet() {
-			d.adders[pollerCommP].Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+			d.adders[pollerCommP].Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 				// update
-				n, err := tx.Exec(`UPDATE market_mk20_pipeline SET commp_task_id = $1 
+				n, err := tx.ExecI(`UPDATE market_mk20_pipeline SET commp_task_id = $1 
                                 		 WHERE id = $2 
 										  AND sp_id = $3 
 										  AND piece_cid = $4
@@ -921,8 +922,8 @@ func (d *CurioStorageDealMarket) processMK20DealAggregation(ctx context.Context)
 
 	for _, deal := range deals {
 		log.Infow("processing aggregation task", "deal", deal.ID, "count", deal.Count)
-		d.adders[pollerAggregate].Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
-			n, err := tx.Exec(`UPDATE market_mk20_pipeline SET agg_task_id = $1 
+		d.adders[pollerAggregate].Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
+			n, err := tx.ExecI(`UPDATE market_mk20_pipeline SET agg_task_id = $1 
                             		WHERE id = $2 
                             		  AND started = TRUE
                             		  AND downloaded = TRUE

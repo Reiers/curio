@@ -169,7 +169,7 @@ func (c *InitialChunker) finishDB(ctx context.Context, db harmonyquery.DBInterfa
 		}
 
 		// Send the batch
-		br, err := tx.SendBatch(ctx, batch)
+		br, err := tx.(*harmonyquery.Tx).SendBatch(ctx, batch)
 		if err != nil {
 			return false, xerrors.Errorf("sending batch: %w", err)
 		}

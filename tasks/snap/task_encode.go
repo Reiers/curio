@@ -15,6 +15,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -297,7 +298,7 @@ func (e *EncodeTask) Adder(taskFunc harmonytask.AddTaskFunc) {
 func (e *EncodeTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var tasks []struct {
@@ -305,7 +306,7 @@ func (e *EncodeTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 				SectorNumber int64 `db:"sector_number"`
 			}
 
-			err := tx.Select(&tasks, `SELECT sp_id, sector_number FROM sectors_snap_pipeline WHERE data_assigned = true AND after_encode = FALSE AND task_id_encode IS NULL`)
+			err := tx.SelectI(&tasks, `SELECT sp_id, sector_number FROM sectors_snap_pipeline WHERE data_assigned = true AND after_encode = FALSE AND task_id_encode IS NULL`)
 			if err != nil {
 				return false, xerrors.Errorf("getting tasks: %w", err)
 			}
@@ -317,7 +318,7 @@ func (e *EncodeTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 			// pick at random in case there are a bunch of schedules across the cluster
 			t := tasks[rand.N(len(tasks))]
 
-			_, err = tx.Exec(`UPDATE sectors_snap_pipeline SET task_id_encode = $1 WHERE sp_id = $2 AND sector_number = $3`, id, t.SpID, t.SectorNumber)
+			_, err = tx.ExecI(`UPDATE sectors_snap_pipeline SET task_id_encode = $1 WHERE sp_id = $2 AND sector_number = $3`, id, t.SpID, t.SectorNumber)
 			if err != nil {
 				return false, xerrors.Errorf("updating task id: %w", err)
 			}

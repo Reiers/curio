@@ -10,6 +10,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -156,13 +157,13 @@ func (t *TaskUnsealSdr) TypeDetails() harmonytask.TaskTypeDetails {
 func (t *TaskUnsealSdr) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	// schedule at most one unseal when we're bored
 
-	taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+	taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 		var tasks []struct {
 			SpID         int64 `db:"sp_id"`
 			SectorNumber int64 `db:"sector_number"`
 		}
 
-		err := tx.Select(&tasks, `SELECT sp_id, sector_number FROM sectors_unseal_pipeline WHERE after_unseal_sdr = FALSE AND task_id_unseal_sdr IS NULL`)
+		err := tx.SelectI(&tasks, `SELECT sp_id, sector_number FROM sectors_unseal_pipeline WHERE after_unseal_sdr = FALSE AND task_id_unseal_sdr IS NULL`)
 		if err != nil {
 			return false, xerrors.Errorf("getting tasks: %w", err)
 		}
@@ -174,7 +175,7 @@ func (t *TaskUnsealSdr) schedule(ctx context.Context, taskFunc harmonytask.AddTa
 		// pick at random in case there are a bunch of schedules across the cluster
 		t := tasks[rand.N(len(tasks))]
 
-		_, err = tx.Exec(`UPDATE sectors_unseal_pipeline SET task_id_unseal_sdr = $1 WHERE sp_id = $2 AND sector_number = $3`, id, t.SpID, t.SectorNumber)
+		_, err = tx.ExecI(`UPDATE sectors_unseal_pipeline SET task_id_unseal_sdr = $1 WHERE sp_id = $2 AND sector_number = $3`, id, t.SpID, t.SectorNumber)
 		if err != nil {
 			return false, xerrors.Errorf("updating task id: %w", err)
 		}

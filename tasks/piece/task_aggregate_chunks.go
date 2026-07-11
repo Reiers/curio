@@ -14,6 +14,7 @@ import (
 
 	"github.com/filecoin-project/go-address"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -382,11 +383,11 @@ func (a *AggregateChunksTask) schedule(ctx context.Context, taskFunc harmonytask
 	// schedule submits
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 			var mid string
 			var count int
-			err := tx.QueryRow(`SELECT id, COUNT(*) AS total_chunks
+			err := tx.QueryRowI(`SELECT id, COUNT(*) AS total_chunks
 											FROM market_mk20_deal_chunk
 											GROUP BY id
 											HAVING
@@ -408,7 +409,7 @@ func (a *AggregateChunksTask) schedule(ctx context.Context, taskFunc harmonytask
 				return false, xerrors.Errorf("no id for tasks to schedule")
 			}
 
-			n, err := tx.Exec(`UPDATE market_mk20_deal_chunk SET finalize_task_id = $1 
+			n, err := tx.ExecI(`UPDATE market_mk20_deal_chunk SET finalize_task_id = $1 
                               WHERE id = $2 
                                 AND complete = TRUE 
                                 AND finalize = TRUE 

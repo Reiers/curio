@@ -9,6 +9,7 @@ import (
 
 	"github.com/filecoin-project/go-address"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -43,14 +44,14 @@ func (t *TaskSubmit) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 	var stop bool
 
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true
 
 			// 1) Find any rows that are ready to be scheduled for submission.
 			var rows []struct {
 				ServiceID int64 `db:"service_id"`
 			}
-			err := tx.Select(&rows, `
+			err := tx.SelectI(&rows, `
 				SELECT service_id 
 				FROM proofshare_queue
 				WHERE compute_done  = TRUE
@@ -72,7 +73,7 @@ func (t *TaskSubmit) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 			taskRow := rows[0]
 
 			// 4) Mark this row with the new task ID.
-			_, err = tx.Exec(`
+			_, err = tx.ExecI(`
 				UPDATE proofshare_queue
 				SET submit_task_id = $1
 				WHERE service_id   = $2

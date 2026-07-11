@@ -12,6 +12,7 @@ import (
 	commcid "github.com/filecoin-project/go-fil-commcid"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/lib/proof"
@@ -46,14 +47,14 @@ func (t *TaskClientUpload) adderSnap(add harmonytask.AddTaskFunc) {
 			log.Infow("TaskClientUpload.adderSnap() ticker fired, looking for sectors to process")
 
 		again:
-			add(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			add(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Check if client settings are enabled for PoRep
 				var enabledFor []struct {
 					SpID                  int64  `db:"sp_id"`
 					MinimumPendingSeconds int64  `db:"minimum_pending_seconds"`
 					Wallet                string `db:"wallet"`
 				}
-				err := tx.Select(&enabledFor, `
+				err := tx.SelectI(&enabledFor, `
 					SELECT sp_id, minimum_pending_seconds, wallet
 					FROM proofshare_client_settings
 					WHERE enabled = TRUE AND do_snap = TRUE
@@ -83,7 +84,7 @@ func (t *TaskClientUpload) adderSnap(add harmonytask.AddTaskFunc) {
 				cutoffTime := time.Now().Add(-time.Duration(minPendingSeconds) * time.Second)
 				log.Infow("TaskClientUpload.adderSnap() querying for sectors with cutoff time", "cutoffTime", cutoffTime)
 
-				err = tx.Select(&sectors, `SELECT sp_id, sector_number, task_id_prove, update_sealed_cid FROM sectors_snap_pipeline
+				err = tx.SelectI(&sectors, `SELECT sp_id, sector_number, task_id_prove, update_sealed_cid FROM sectors_snap_pipeline
 											LEFT JOIN harmony_task ht on sectors_snap_pipeline.task_id_prove = ht.id
 											WHERE after_prove = FALSE AND task_id_prove IS NOT NULL AND ht.owner_id IS NULL AND ht.name = 'UpdateProve' AND ht.posted_time < $1 LIMIT 1`, cutoffTime)
 				if err != nil {
@@ -99,7 +100,7 @@ func (t *TaskClientUpload) adderSnap(add harmonytask.AddTaskFunc) {
 				log.Infow("TaskClientUpload.adderSnap() creating task", "taskID", taskID, "spID", sectors[0].SpID, "sectorNumber", sectors[0].SectorNumber)
 
 				// Create task
-				_, err = tx.Exec(`
+				_, err = tx.ExecI(`
 					UPDATE sectors_snap_pipeline
 					SET task_id_prove = $1
 					WHERE sp_id = $2 AND sector_number = $3
@@ -111,7 +112,7 @@ func (t *TaskClientUpload) adderSnap(add harmonytask.AddTaskFunc) {
 
 				if sectors[0].TaskIDProve.Valid {
 					log.Infow("TaskClientUpload.adderSnap() deleting old task", "oldTaskID", sectors[0].TaskIDProve.Int64, "newTaskID", taskID)
-					_, err := tx.Exec(`DELETE FROM harmony_task WHERE id = $1`, sectors[0].TaskIDProve.Int64)
+					_, err := tx.ExecI(`DELETE FROM harmony_task WHERE id = $1`, sectors[0].TaskIDProve.Int64)
 					if err != nil {
 						log.Errorw("TaskClientUpload.adderSnap() failed to delete old task", "error", err, "oldTaskID", sectors[0].TaskIDProve.Int64)
 						return false, xerrors.Errorf("deleting old task: %w", err)
@@ -120,7 +121,7 @@ func (t *TaskClientUpload) adderSnap(add harmonytask.AddTaskFunc) {
 
 				// Remove any stale requests for this sector with a different sealed CID
 				// (CommR changed due to retry with new data)
-				_, err = tx.Exec(`
+				_, err = tx.ExecI(`
 				DELETE FROM proofshare_client_requests
 				WHERE sp_id = $1 AND sector_num = $2 AND request_type = 'snap' AND sealed_cid != $3
 			`, sectors[0].SpID, sectors[0].SectorNumber, sectors[0].UpdateSealedCid)
@@ -132,7 +133,7 @@ func (t *TaskClientUpload) adderSnap(add harmonytask.AddTaskFunc) {
 				// Insert proofshare_client_requests
 				// NOTE: the on-conflict spec allows the task to be retried in the sector-pipeline, essentially making the proofshare task/pipeline idempotent
 				// The sealed_cid (CommR) is included in the idempotency key so that retries with different data generate new proofs
-				_, err = tx.Exec(`
+				_, err = tx.ExecI(`
 				INSERT INTO proofshare_client_requests (sp_id, sector_num, request_type, sealed_cid, task_id_upload, request_partition_cost, created_at)
 				VALUES ($1, $2, 'snap', $3, $4, 16, current_timestamp)
 				ON CONFLICT (sp_id, sector_num, request_type, sealed_cid) DO UPDATE SET task_id_upload = $4, done = false

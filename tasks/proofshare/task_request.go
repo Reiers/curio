@@ -11,6 +11,7 @@ import (
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -63,12 +64,12 @@ func (t *TaskRequestProofs) Adder(taskTx harmonytask.AddTaskFunc) {
 			}
 			recordProofshareAdderHoldDecision("pass")
 
-			taskTx(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			taskTx(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Get current state from proofshare_meta
 				var enabled bool
 				var wallet *string
 				var requestTaskID *int64
-				err := tx.QueryRow(`
+				err := tx.QueryRowI(`
 					SELECT enabled, wallet, request_task_id 
 					FROM proofshare_meta 
 					WHERE singleton = true
@@ -84,7 +85,7 @@ func (t *TaskRequestProofs) Adder(taskTx harmonytask.AddTaskFunc) {
 
 				// Count pending requests
 				var queueCount int
-				err = tx.QueryRow(`
+				err = tx.QueryRowI(`
 					SELECT COUNT(*) 
 					FROM proofshare_queue q
 					LEFT JOIN harmony_task t ON t.id = q.compute_task_id
@@ -102,7 +103,7 @@ func (t *TaskRequestProofs) Adder(taskTx harmonytask.AddTaskFunc) {
 				}
 
 				// Update request_task_id
-				_, err = tx.Exec(`
+				_, err = tx.ExecI(`
 					UPDATE proofshare_meta 
 					SET request_task_id = $1
 					WHERE singleton = true

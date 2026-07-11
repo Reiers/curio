@@ -28,6 +28,7 @@ import (
 
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/deps/config"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/lib/ethchain"
@@ -534,9 +535,9 @@ func (d *CurioStorageDealMarket) processMk12Deal(ctx context.Context, deal MK12P
 		}
 
 		if d.adders[pollerCommP].IsSet() {
-			d.adders[pollerCommP].Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+			d.adders[pollerCommP].Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 				// update
-				n, err := tx.Exec(`UPDATE market_mk12_deal_pipeline SET commp_task_id = $1 
+				n, err := tx.ExecI(`UPDATE market_mk12_deal_pipeline SET commp_task_id = $1 
                                  WHERE uuid = $2 AND started = TRUE AND commp_task_id IS NULL AND after_commp = FALSE`, id, deal.UUID)
 				if err != nil {
 					return false, xerrors.Errorf("UUID: %s: updating deal pipeline: %w", deal.UUID, err)
@@ -573,9 +574,9 @@ func (d *CurioStorageDealMarket) processMk12Deal(ctx context.Context, deal MK12P
 			return nil
 		}
 
-		d.adders[pollerFindDeal].Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
+		d.adders[pollerFindDeal].Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
 			// update
-			n, err := tx.Exec(`UPDATE market_mk12_deal_pipeline SET find_deal_task_id = $1 
+			n, err := tx.ExecI(`UPDATE market_mk12_deal_pipeline SET find_deal_task_id = $1 
                                  WHERE uuid = $2 AND started = TRUE AND find_deal_task_id IS NULL 
                                    AND after_commp = TRUE AND after_psd = TRUE AND after_find_deal = FALSE`, id, deal.UUID)
 			if err != nil {
@@ -814,8 +815,8 @@ func (d *CurioStorageDealMarket) addPSDTask(ctx context.Context) error {
 		if sp.EarliestWaitTime.Add(publishPeriod).After(time.Now().UTC()) {
 			continue
 		}
-		d.adders[pollerPSD].Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, err error) {
-			n, err := tx.Exec(`WITH deals_to_update AS (
+		d.adders[pollerPSD].Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, err error) {
+			n, err := tx.ExecI(`WITH deals_to_update AS (
 										-- Select only deals that have not been assigned yet
 										SELECT uuid
 										FROM market_mk12_deal_pipeline

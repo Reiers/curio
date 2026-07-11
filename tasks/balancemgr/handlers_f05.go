@@ -9,7 +9,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/big"
 
-	"github.com/filecoin-project/curio/harmony/harmonydb"
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 
 	"github.com/filecoin-project/lotus/api"
@@ -39,9 +39,9 @@ func (b *BalanceMgrTask) adderF05(ctx context.Context, taskFunc harmonytask.AddT
 	}
 
 	if shouldCreateTask {
-		taskFunc(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			// check that address.ID has active_task_id = null, set the task ID, set last_ to null
-			n, err := tx.Exec(`
+			n, err := tx.ExecI(`
 				UPDATE balance_manager_addresses
 				SET active_task_id = $1, last_msg_cid = NULL, last_msg_sent_at = NULL, last_msg_landed_at = NULL
 				WHERE id = $2 AND active_task_id IS NULL AND (last_msg_cid IS NULL OR last_msg_landed_at IS NOT NULL)

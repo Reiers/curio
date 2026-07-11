@@ -11,6 +11,7 @@ import (
 	actorstypes "github.com/filecoin-project/go-state-types/actors"
 	"github.com/filecoin-project/go-state-types/exitcode"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/build"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
@@ -88,9 +89,9 @@ func (s *SealPoller) pollStartBatchCommitMsg(ctx context.Context) {
 	// poll runs exactly when the deadline elapses.
 	var earliestDeadline time.Time
 
-	s.pollers[pollerCommitMsg].Val(ctx)(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+	s.pollers[pollerCommitMsg].Val(ctx)(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 		var rows []BatchRow
-		err := tx.Select(&rows, `
+		err := tx.SelectI(&rows, `
 			WITH initial AS (
 				SELECT
 					sp_id,
@@ -155,7 +156,7 @@ func (s *SealPoller) pollStartBatchCommitMsg(ctx context.Context) {
 			return false, nil
 		}
 
-		n, err := tx.Exec(`
+		n, err := tx.ExecI(`
 			UPDATE sectors_sdr_pipeline
 			SET task_id_commit_msg = $1
 			WHERE sp_id = $2

@@ -53,7 +53,7 @@ func InsertParkedPieceDownloadRefsBatch(ctx context.Context, tx harmonyquery.TxI
 			batch.Queue(query, ref.PieceCID, ref.PaddedSize, ref.RawSize, ref.LongTerm, ref.URL, ref.Headers, ref.ID, product, ref.PieceCIDV2)
 		}
 
-		res, err := tx.SendBatch(ctx, batch)
+		res, err := tx.(*harmonyquery.Tx).SendBatch(ctx, batch)
 		if err != nil {
 			return xerrors.Errorf("sending parked piece download ref batch: %w", err)
 		}

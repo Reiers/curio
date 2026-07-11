@@ -15,6 +15,7 @@ import (
 	"github.com/filecoin-project/go-state-types/abi"
 	proof2 "github.com/filecoin-project/go-state-types/proof"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -102,10 +103,10 @@ func (t *TaskProvideSnark) Adder(add harmonytask.AddTaskFunc) {
 	ticker := time.NewTicker(ProveAdderInterval)
 	go func() {
 		for range ticker.C {
-			add(func(taskID harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+			add(func(taskID harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 				// Find unprocessed proofs to compute
 				var serviceID int64
-				err := tx.QueryRow(`
+				err := tx.QueryRowI(`
 					SELECT service_id
 					FROM proofshare_queue q
 					WHERE compute_done = false AND compute_task_id IS NULL
@@ -119,7 +120,7 @@ func (t *TaskProvideSnark) Adder(add harmonytask.AddTaskFunc) {
 				}
 
 				// Create task
-				_, err = tx.Exec(`
+				_, err = tx.ExecI(`
 					UPDATE proofshare_queue 
 					SET compute_task_id = $1
 					WHERE service_id = $2

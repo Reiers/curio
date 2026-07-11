@@ -10,6 +10,7 @@ import (
 	"github.com/filecoin-project/go-padreader"
 	"github.com/filecoin-project/go-state-types/abi"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -165,11 +166,11 @@ func (f *FixRawSize) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 	var stop bool
 
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var running int64
-			err := tx.QueryRow(`SELECT COUNT(*) FROM harmony_task WHERE name = $1`, "FixRawSize").Scan(&running)
+			err := tx.QueryRowI(`SELECT COUNT(*) FROM harmony_task WHERE name = $1`, "FixRawSize").Scan(&running)
 			if err != nil {
 				return false, xerrors.Errorf("getting running FixRawSize tasks: %w", err)
 			}
@@ -182,7 +183,7 @@ func (f *FixRawSize) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 				ID string `db:"id"`
 			}
 
-			err = tx.Select(&tasks, `SELECT mpd.id FROM market_piece_deal mpd
+			err = tx.SelectI(&tasks, `SELECT mpd.id FROM market_piece_deal mpd
           									WHERE mpd.raw_size = 0 
           									  AND mpd.piece_offset IS NOT NULL 
           									  AND EXISTS (
@@ -201,7 +202,7 @@ func (f *FixRawSize) schedule(ctx context.Context, taskFunc harmonytask.AddTaskF
 				return false, nil
 			}
 
-			n, err := tx.Exec(`INSERT INTO market_fix_raw_size (id, task_id) VALUES ($1, $2)`, tasks[0].ID, id)
+			n, err := tx.ExecI(`INSERT INTO market_fix_raw_size (id, task_id) VALUES ($1, $2)`, tasks[0].ID, id)
 			if err != nil {
 				return false, xerrors.Errorf("scheduling market_fix_raw_size: %w", err)
 			}

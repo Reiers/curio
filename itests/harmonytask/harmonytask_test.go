@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/harmonytask/pipetest"
@@ -290,19 +291,19 @@ func TestSchedulerThreeNodeRouting(t *testing.T) {
 	require.NotEqual(t, e2.OwnerID(), e3.OwnerID())
 
 	// Local routing
-	e1.AddTaskByName("RoutA", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e1.AddTaskByName("RoutA", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	aID := waitForTask(t, tA.doneCh, taskTimeout)
 	host := waitForHistory(t, db, aID, taskTimeout)
 	require.Equal(t, "r1:1000", host)
 
 	// Cross-scheduler: AddTask on scheduler 2 → scheduler 2 runs it
-	e2.AddTaskByName("RoutB", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e2.AddTaskByName("RoutB", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	bID := waitForTask(t, tB.doneCh, taskTimeout)
 	host = waitForHistory(t, db, bID, taskTimeout)
 	require.Equal(t, "r2:1000", host)
 
 	// Cross-scheduler: AddTask on scheduler 3 → scheduler 3 runs it
-	e3.AddTaskByName("RoutC", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e3.AddTaskByName("RoutC", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	cID := waitForTask(t, tC.doneCh, taskTimeout)
 	host = waitForHistory(t, db, cID, taskTimeout)
 	require.Equal(t, "r3:1000", host)
@@ -327,7 +328,7 @@ func TestSchedulerRemoteTaskStart(t *testing.T) {
 
 	// Pipe1 completes → adds Pipe2 on scheduler 2 (remote task start)
 	s1.doFunc = func(ctx context.Context, id harmonytask.TaskID, so func() bool) (bool, error) {
-		e2.AddTaskByName("Pipe2", func(tID harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) {
+		e2.AddTaskByName("Pipe2", func(tID harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) {
 			return true, nil
 		})
 		s1.doneCh <- id
@@ -335,14 +336,14 @@ func TestSchedulerRemoteTaskStart(t *testing.T) {
 	}
 	// Pipe2 completes → adds Pipe3 on scheduler 3 (remote task start)
 	s2.doFunc = func(ctx context.Context, id harmonytask.TaskID, so func() bool) (bool, error) {
-		e3.AddTaskByName("Pipe3", func(tID harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) {
+		e3.AddTaskByName("Pipe3", func(tID harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) {
 			return true, nil
 		})
 		s2.doneCh <- id
 		return true, nil
 	}
 
-	e1.AddTaskByName("Pipe1", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e1.AddTaskByName("Pipe1", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	waitForTask(t, s1.doneCh, taskTimeout)
 	waitForTask(t, s2.doneCh, taskTimeout)
 	waitForTask(t, s3.doneCh, taskTimeout)
@@ -384,9 +385,9 @@ func TestSchedulerConcurrentMultiNode(t *testing.T) {
 
 	const perType = 5
 	for i := 0; i < perType; i++ {
-		e1.AddTaskByName("BulkX", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-		e2.AddTaskByName("BulkY", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-		e3.AddTaskByName("BulkZ", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+		e1.AddTaskByName("BulkX", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+		e2.AddTaskByName("BulkY", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+		e3.AddTaskByName("BulkZ", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	}
 
 	waitForTasks(t, tX.doneCh, perType, taskTimeout)
@@ -436,9 +437,9 @@ func TestSchedulerOldestFirstAcrossTypes(t *testing.T) {
 	e.TestONLY_SetPollDuration(50 * time.Millisecond)
 
 	// Type A posted first (older) then B — A should run first.
-	e.AddTaskByName("Old1stA", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("Old1stA", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(50 * time.Millisecond)
-	e.AddTaskByName("Old1stB", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("Old1stB", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	waitForTasks(t, tA.doneCh, 1, taskTimeout)
 	waitForTasks(t, tB.doneCh, 1, taskTimeout)
@@ -491,11 +492,11 @@ func TestSchedulerPipelineDownstreamOrder(t *testing.T) {
 	e.TestONLY_SetPollDuration(50 * time.Millisecond)
 
 	// Post oldest→newest along the pipeline so the global oldest anchor is Pipe2Ch.
-	e.AddTaskByName("Pipe2Ch", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("Pipe2Ch", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(50 * time.Millisecond)
-	e.AddTaskByName("Pipe2Mid", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("Pipe2Mid", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(50 * time.Millisecond)
-	e.AddTaskByName("Pipe2Rt", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("Pipe2Rt", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	waitForTasks(t, tChild.doneCh, 1, taskTimeout)
 	waitForTasks(t, tMid.doneCh, 1, taskTimeout)
@@ -532,7 +533,7 @@ func TestSchedulerMaxConcurrency(t *testing.T) {
 	speedUpPolling(e)
 
 	for i := 0; i < 6; i++ {
-		e.AddTaskByName("MaxT", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+		e.AddTaskByName("MaxT", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	}
 
 	waitForTasks(t, done, 6, 30*time.Second)
@@ -560,7 +561,7 @@ func TestSchedulerRetry(t *testing.T) {
 
 	e := makeEngine(t, db, []harmonytask.TaskInterface{tR}, "re:1000")
 	speedUpPolling(e)
-	e.AddTaskByName("RetryT", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("RetryT", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	id := waitForTask(t, tR.doneCh, 30*time.Second)
 	require.GreaterOrEqual(t, int(atomic.LoadInt32(&attempts)), 3)
@@ -601,9 +602,9 @@ func TestSchedulerMultiTaskNode(t *testing.T) {
 	e := makeEngine(t, db, []harmonytask.TaskInterface{t1, t2, t3}, "mt:1000")
 	speedUpPolling(e)
 
-	e.AddTaskByName("Mul1", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("Mul2", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("Mul3", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("Mul1", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("Mul2", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("Mul3", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	id1 := waitForTask(t, t1.doneCh, taskTimeout)
 	id2 := waitForTask(t, t2.doneCh, taskTimeout)
@@ -646,11 +647,11 @@ func TestSchedulerSharedTask(t *testing.T) {
 	for i := 0; i < total; i++ {
 		switch i % 3 {
 		case 0:
-			e1.AddTaskByName("ShareX", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+			e1.AddTaskByName("ShareX", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 		case 1:
-			e2.AddTaskByName("ShareX", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+			e2.AddTaskByName("ShareX", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 		case 2:
-			e3.AddTaskByName("ShareX", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+			e3.AddTaskByName("ShareX", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 		}
 	}
 
@@ -719,7 +720,7 @@ func TestPeeringEndToEnd(t *testing.T) {
 
 	// eA adds the task: its scheduler processes the event, CanAccept rejects
 	// locally, but TellOthers notifies eB which claims and runs it.
-	eA.AddTaskByName("PeerE2E", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) {
+	eA.AddTaskByName("PeerE2E", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) {
 		return true, nil
 	})
 
@@ -753,15 +754,15 @@ func TestPeeringThreeNodeRouting(t *testing.T) {
 	require.NotEqual(t, eB.OwnerID(), eC.OwnerID())
 
 	// Each engine adds its own task type — should complete locally.
-	eA.AddTaskByName("PRingA", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	eA.AddTaskByName("PRingA", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	aID := waitForTask(t, tA.doneCh, taskTimeout)
 	require.Equal(t, "pr1:1000", waitForHistory(t, db, aID, taskTimeout))
 
-	eB.AddTaskByName("PRingB", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	eB.AddTaskByName("PRingB", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	bID := waitForTask(t, tB.doneCh, taskTimeout)
 	require.Equal(t, "pr2:1000", waitForHistory(t, db, bID, taskTimeout))
 
-	eC.AddTaskByName("PRingC", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	eC.AddTaskByName("PRingC", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	cID := waitForTask(t, tC.doneCh, taskTimeout)
 	require.Equal(t, "pr3:1000", waitForHistory(t, db, cID, taskTimeout))
 
@@ -826,14 +827,14 @@ func TestTimeSensitiveRunsAheadOfMixedClaimingWork(t *testing.T) {
 		resources.Resources{Cpu: 6, Ram: 1 << 30, Gpu: 0})
 	speedUpPolling(e)
 
-	e.AddTaskByName("MixClaim", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("MixClaim", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("MixFill", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("MixFill", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("MixClaim", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("MixClaim", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("MixFill", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("MixFill", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(700 * time.Millisecond)
 
 	tsStart := time.Now()
-	e.AddTaskByName("MixTS", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("MixTS", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	_ = waitForTask(t, ts.doneCh, taskTimeout)
 	require.Less(t, time.Since(tsStart), 5*time.Second,
@@ -886,12 +887,12 @@ func TestPreemptionFreesResourcesForTimeSensitive(t *testing.T) {
 	speedUpPolling(e)
 
 	// Fill capacity with victims (2 slots).
-	e.AddTaskByName("PreemptVictim", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("PreemptVictim", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("PreemptVictim", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("PreemptVictim", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(500 * time.Millisecond) // let victims start
 
 	// Add TimeSensitive task - should trigger preemption of one victim
-	e.AddTaskByName("PreemptTS", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("PreemptTS", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	// TS should complete (it gets the preempted slot)
 	tsID := waitForTask(t, ts.doneCh, taskTimeout)
@@ -931,11 +932,11 @@ func TestPreemptedTaskReclaimable(t *testing.T) {
 	e := makeEngine(t, db, []harmonytask.TaskInterface{victim, ts}, "reclaim:1000")
 	speedUpPolling(e)
 
-	e.AddTaskByName("ReclaimVictim", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
-	e.AddTaskByName("ReclaimVictim", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("ReclaimVictim", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
+	e.AddTaskByName("ReclaimVictim", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(500 * time.Millisecond)
 
-	e.AddTaskByName("ReclaimTS", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("ReclaimTS", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 
 	_ = waitForTask(t, ts.doneCh, taskTimeout)
 
@@ -977,7 +978,7 @@ func TestContextCancellationOnGracefulShutdown(t *testing.T) {
 	// Do NOT call GracefullyTerminate via Cleanup - we call it explicitly.
 	e.TestONLY_SetPollDuration(200 * time.Millisecond)
 
-	e.AddTaskByName("ShutdownBlock", func(id harmonytask.TaskID, tx *harmonydb.Tx) (bool, error) { return true, nil })
+	e.AddTaskByName("ShutdownBlock", func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (bool, error) { return true, nil })
 	time.Sleep(500 * time.Millisecond) // let task start
 
 	e.GracefullyTerminate()

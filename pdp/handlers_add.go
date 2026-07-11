@@ -105,7 +105,14 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
 			phList[i] = fmt.Sprintf("$%d", i+2)
 			qArgs = append(qArgs, c)
 		}
-		rows, err := tx.QueryI(harmonyquery.RawString(`
+		var rows []struct {
+			PieceCID        string `db:"piece_cid"`
+			PDPPieceRefID   int64  `db:"pdp_pieceref_id"`
+			PieceRef        int64  `db:"piece_ref"`
+			PiecePaddedSize uint64 `db:"piece_padded_size"`
+			PieceRawSize    uint64 `db:"piece_raw_size"`
+		}
+		if err := tx.SelectI(&rows, harmonyquery.RawString(`
             SELECT ppr.piece_cid, ppr.id AS pdp_pieceref_id, ppr.piece_ref,
                    pp.piece_padded_size, pp.piece_raw_size
             FROM pdp_piecerefs ppr
@@ -113,23 +120,13 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
             JOIN parked_pieces pp ON pp.id = pprf.piece_id
             WHERE ppr.service = $1 AND ppr.piece_cid IN (`+strings.Join(phList, ", ")+`)
             ORDER BY ppr.created_at ASC, ppr.id ASC
-        `), qArgs...)
-		if err != nil {
+        `), qArgs...); err != nil {
 			return false, err
 		}
-		defer rows.Close()
 
 		foundSubPieces := make(map[string]struct{})
-		for rows.Next() {
-			var pieceCIDStr string
-			var pdpPieceRefID, pieceRefID int64
-			var piecePaddedSize uint64
-			var pieceRawSize uint64
-
-			err := rows.Scan(&pieceCIDStr, &pdpPieceRefID, &pieceRefID, &piecePaddedSize, &pieceRawSize)
-			if err != nil {
-				return false, err
-			}
+		for _, row := range rows {
+			pieceCIDStr := row.PieceCID
 			if _, found := foundSubPieces[pieceCIDStr]; found {
 				continue
 			}
@@ -142,9 +139,9 @@ func (p *PDPService) transformAddPiecesRequest(ctx context.Context, serviceLabel
 
 			subPieceInfoMap[pieceCIDStr] = &SubPieceInfo{
 				PieceCIDv1:     pieceCID,
-				PaddedSize:     abi.PaddedPieceSize(piecePaddedSize),
-				RawSize:        pieceRawSize,
-				PDPPieceRefID:  pdpPieceRefID,
+				PaddedSize:     abi.PaddedPieceSize(row.PiecePaddedSize),
+				RawSize:        row.PieceRawSize,
+				PDPPieceRefID:  row.PDPPieceRefID,
 				SubPieceOffset: 0, // Will compute offset later
 			}
 

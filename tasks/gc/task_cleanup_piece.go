@@ -12,6 +12,7 @@ import (
 	"github.com/yugabyte/pgx/v5"
 	"golang.org/x/xerrors"
 
+	"github.com/curiostorage/harmonyquery"
 	"github.com/filecoin-project/curio/harmony/harmonydb"
 	"github.com/filecoin-project/curio/harmony/harmonytask"
 	"github.com/filecoin-project/curio/harmony/resources"
@@ -447,12 +448,12 @@ func (p *PieceCleanupTask) TypeDetails() harmonytask.TaskTypeDetails {
 func (p *PieceCleanupTask) schedule(ctx context.Context, taskFunc harmonytask.AddTaskFunc) error {
 	var stop bool
 	for !stop {
-		taskFunc(func(id harmonytask.TaskID, tx *harmonydb.Tx) (shouldCommit bool, seriousError error) {
+		taskFunc(func(id harmonytask.TaskID, tx harmonyquery.TxInterface) (shouldCommit bool, seriousError error) {
 			stop = true // assume we're done until we find a task to schedule
 
 			var did string
 			var pdp bool
-			err := tx.QueryRow(`SELECT id, pdp FROM piece_cleanup 
+			err := tx.QueryRowI(`SELECT id, pdp FROM piece_cleanup 
 								  WHERE cleanup_task_id IS NULL
 								  AND after_cleanup = FALSE 
 									LIMIT 1`).Scan(&did, &pdp)
@@ -463,7 +464,7 @@ func (p *PieceCleanupTask) schedule(ctx context.Context, taskFunc harmonytask.Ad
 				return false, xerrors.Errorf("failed to query piece_cleanup: %w", err)
 			}
 
-			_, err = tx.Exec(`UPDATE piece_cleanup SET cleanup_task_id = $1 WHERE id = $2 AND pdp = $3 AND after_cleanup = FALSE`, id, did, pdp)
+			_, err = tx.ExecI(`UPDATE piece_cleanup SET cleanup_task_id = $1 WHERE id = $2 AND pdp = $3 AND after_cleanup = FALSE`, id, did, pdp)
 			if err != nil {
 				return false, xerrors.Errorf("failed to update piece_cleanup: %w", err)
 			}

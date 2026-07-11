@@ -213,7 +213,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 				batch.Queue(`INSERT INTO market_mk20_deal_chunk (id, chunk, chunk_size, complete) VALUES ($1, $2, $3, FALSE);`, id.String(), i, s)
 			}
 			if batch.Len() >= batchSize {
-				res, err := tx.SendBatch(ctx, batch)
+				res, err := tx.(*harmonyquery.Tx).SendBatch(ctx, batch)
 				if err != nil {
 					return false, xerrors.Errorf("failed to send batch: %w", err)
 				}
@@ -224,7 +224,7 @@ func (m *MK20) HandleUploadStart(ctx context.Context, id ulid.ULID, upload Start
 			}
 		}
 		if batch.Len() > 0 {
-			res, err := tx.SendBatch(ctx, batch)
+			res, err := tx.(*harmonyquery.Tx).SendBatch(ctx, batch)
 			if err != nil {
 				return false, xerrors.Errorf("failed to send batch: %w", err)
 			}
